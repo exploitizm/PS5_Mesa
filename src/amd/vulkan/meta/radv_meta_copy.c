@@ -6,6 +6,7 @@
 
 #include "radv_formats.h"
 #include "radv_meta.h"
+void radv_split_cmd_stream_if_due(struct radv_cmd_buffer *cmd_buffer);
 #include "radv_sdma.h"
 #include "vk_format.h"
 
@@ -296,6 +297,7 @@ VKAPI_ATTR void VKAPI_CALL
 radv_CmdCopyBufferToImage2(VkCommandBuffer commandBuffer, const VkCopyBufferToImageInfo2 *pCopyBufferToImageInfo)
 {
    VK_FROM_HANDLE(radv_cmd_buffer, cmd_buffer, commandBuffer);
+   radv_split_cmd_stream_if_due(cmd_buffer); /* ProsperoEden: tools/patch-radv-transfer-split.py */
    VK_FROM_HANDLE(radv_buffer, src_buffer, pCopyBufferToImageInfo->srcBuffer);
    VK_FROM_HANDLE(radv_image, dst_image, pCopyBufferToImageInfo->dstImage);
    struct radv_device *device = radv_cmd_buffer_device(cmd_buffer);
@@ -508,6 +510,7 @@ VKAPI_ATTR void VKAPI_CALL
 radv_CmdCopyImageToBuffer2(VkCommandBuffer commandBuffer, const VkCopyImageToBufferInfo2 *pCopyImageToBufferInfo)
 {
    VK_FROM_HANDLE(radv_cmd_buffer, cmd_buffer, commandBuffer);
+   radv_split_cmd_stream_if_due(cmd_buffer); /* ProsperoEden: tools/patch-radv-transfer-split.py */
    VK_FROM_HANDLE(radv_image, src_image, pCopyImageToBufferInfo->srcImage);
    VK_FROM_HANDLE(radv_buffer, dst_buffer, pCopyImageToBufferInfo->dstBuffer);
    struct radv_device *device = radv_cmd_buffer_device(cmd_buffer);
@@ -801,6 +804,7 @@ VKAPI_ATTR void VKAPI_CALL
 radv_CmdCopyImage2(VkCommandBuffer commandBuffer, const VkCopyImageInfo2 *pCopyImageInfo)
 {
    VK_FROM_HANDLE(radv_cmd_buffer, cmd_buffer, commandBuffer);
+   radv_split_cmd_stream_if_due(cmd_buffer); /* ProsperoEden: tools/patch-radv-transfer-split.py */
    VK_FROM_HANDLE(radv_image, src_image, pCopyImageInfo->srcImage);
    VK_FROM_HANDLE(radv_image, dst_image, pCopyImageInfo->dstImage);
    struct radv_device *device = radv_cmd_buffer_device(cmd_buffer);

@@ -11,6 +11,7 @@
 #include "tools/radv_debug_hang.h"
 #include "radv_cp_dma.h"
 #include "radv_meta.h"
+void radv_split_cmd_stream_if_due(struct radv_cmd_buffer *cmd_buffer);
 #include "radv_sdma.h"
 #include "radv_tracepoints.h"
 #include "vk_shader_module.h"
@@ -325,6 +326,7 @@ radv_CmdFillBuffer(VkCommandBuffer commandBuffer, VkBuffer dstBuffer, VkDeviceSi
                    uint32_t data)
 {
    VK_FROM_HANDLE(radv_cmd_buffer, cmd_buffer, commandBuffer);
+   radv_split_cmd_stream_if_due(cmd_buffer); /* ProsperoEden: tools/patch-radv-transfer-split.py */
    VK_FROM_HANDLE(radv_buffer, dst_buffer, dstBuffer);
 
    radv_suspend_conditional_rendering(cmd_buffer);
@@ -381,6 +383,7 @@ VKAPI_ATTR void VKAPI_CALL
 radv_CmdCopyBuffer2(VkCommandBuffer commandBuffer, const VkCopyBufferInfo2 *pCopyBufferInfo)
 {
    VK_FROM_HANDLE(radv_cmd_buffer, cmd_buffer, commandBuffer);
+   radv_split_cmd_stream_if_due(cmd_buffer); /* ProsperoEden: tools/patch-radv-transfer-split.py */
    VK_FROM_HANDLE(radv_buffer, src_buffer, pCopyBufferInfo->srcBuffer);
    VK_FROM_HANDLE(radv_buffer, dst_buffer, pCopyBufferInfo->dstBuffer);
    struct radv_device *device = radv_cmd_buffer_device(cmd_buffer);
@@ -481,6 +484,7 @@ radv_CmdUpdateBuffer(VkCommandBuffer commandBuffer, VkBuffer dstBuffer, VkDevice
                      const void *pData)
 {
    VK_FROM_HANDLE(radv_cmd_buffer, cmd_buffer, commandBuffer);
+   radv_split_cmd_stream_if_due(cmd_buffer); /* ProsperoEden: tools/patch-radv-transfer-split.py */
    VK_FROM_HANDLE(radv_buffer, dst_buffer, dstBuffer);
    struct radv_device *device = radv_cmd_buffer_device(cmd_buffer);
    const uint64_t dst_va = vk_buffer_address(&dst_buffer->vk, dstOffset);

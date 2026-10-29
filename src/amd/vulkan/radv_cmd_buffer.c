@@ -13929,7 +13929,9 @@ radv_bind_graphics_shaders(struct radv_cmd_buffer *cmd_buffer)
  * kept: the submission after the split starts with the same preamble. State
  * that re-emission does not restore (streamout, conditional rendering, active
  * queries, an inherited render pass) defers the split until it ends. */
-static void
+void radv_split_cmd_stream_if_due(struct radv_cmd_buffer *cmd_buffer);
+
+void
 radv_split_cmd_stream_if_due(struct radv_cmd_buffer *cmd_buffer)
 {
    struct radv_device *device = radv_cmd_buffer_device(cmd_buffer);
@@ -17364,6 +17366,7 @@ VKAPI_ATTR void VKAPI_CALL
 radv_CmdPipelineBarrier2(VkCommandBuffer commandBuffer, const VkDependencyInfo *pDependencyInfo)
 {
    VK_FROM_HANDLE(radv_cmd_buffer, cmd_buffer, commandBuffer);
+   radv_split_cmd_stream_if_due(cmd_buffer); /* ProsperoEden: tools/patch-radv-transfer-split.py */
    enum rgp_barrier_reason barrier_reason;
 
    if (cmd_buffer->vk.runtime_rp_barrier) {
