@@ -9,6 +9,9 @@
  */
 
 #include "radv_shader.h"
+#if defined(RADV_PS5)
+#include "winsys/ps5/radv_ps5_winsys_public.h" /* ProsperoEden: tools/patch-radv-submission-dump.py */
+#endif
 #include "meta/radv_meta.h"
 #include "nir/nir.h"
 #include "nir/nir_builder.h"
@@ -3688,6 +3691,11 @@ radv_create_vs_prolog(struct radv_device *device, const struct radv_vs_prolog_ke
 
    prolog->key.vs = *key;
    prolog->nontrivial_divisors = key->nontrivial_divisors;
+#if defined(RADV_PS5)
+   /* ProsperoEden: tools/patch-radv-submission-dump.py */
+   radv_ps5_note_shader(prolog->va, prolog->code_size, "VS prolog",
+                        RADV_PS5_SHADER_PROLOG | RADV_PS5_SHADER_INTERNAL, 0, 0);
+#endif
 
    if (dump_shader) {
       fprintf(stderr, "Vertex prolog");

@@ -35,6 +35,14 @@ struct radv_ps5_in_flight {
    uint32_t start;
    uint32_t end;
    struct radv_ps5_memory dedicated;
+   /* ProsperoEden (tools/patch-radv-submission-dump.py): what the stall dump prints; filled
+    * under submit_lock once the submission is claimed, 0 until then. */
+   uint32_t words;
+   uint16_t parts;
+   uint16_t wait_count;
+   uint16_t signal_count;
+   uint8_t queue_index;
+   uint64_t depends;
 };
 
 /* The GPU queue, shared by every winsys in the process: each VkDevice gets a
@@ -70,6 +78,11 @@ struct radv_ps5_queue {
 
 /* The process's queue, created by the first winsys; NULL if it cannot be. */
 struct radv_ps5_queue *radv_ps5_queue_get(void);
+/* ProsperoEden: records for the newest in-flight submission what the stall dump needs
+ * (tools/patch-radv-submission-dump.py). Called with the submit lock held. */
+void radv_ps5_record_submission(struct radv_ps5_queue *queue, uint32_t words, uint32_t parts,
+                                uint32_t wait_count, uint32_t signal_count, uint32_t queue_index,
+                                uint64_t depends);
 
 /* The GPU's timestamp clock, read through the queue; 0 if it cannot be. */
 uint64_t radv_ps5_read_gpu_clock(void);

@@ -32,4 +32,16 @@ VkResult radv_ps5_winsys_create(const struct radeon_info *info, uint64_t debug_f
  * for VK_EXT_memory_budget. */
 void radv_ps5_winsys_heap_usage(uint64_t *pool_bytes, uint64_t *available_bytes, uint64_t *driver_bytes);
 
+/* ProsperoEden (tools/patch-radv-submission-dump.py): a shader's code sits at [va, va + bytes) on
+ * the GPU, for the stall dump to say whose code a stuck draw or dispatch was running: the stage, the
+ * kind of code (RADV_PS5_SHADER_*), the pipeline's hash and its VkPipeline handle (0 for code no
+ * pipeline owns). stage is a string that lives as long as the process. Called at pipeline and
+ * vertex-input prolog creation: a few stores into a fixed ring, no allocation, no lock. */
+#define RADV_PS5_SHADER_GRAPHICS 0u
+#define RADV_PS5_SHADER_COMPUTE 1u
+#define RADV_PS5_SHADER_PROLOG 2u
+#define RADV_PS5_SHADER_INTERNAL 0x100u /* RADV's own: a meta pipeline or a prolog */
+void radv_ps5_note_shader(uint64_t va, uint32_t bytes, const char *stage, uint32_t kind, uint64_t pipeline_hash,
+                          uint64_t pipeline);
+
 #endif /* RADV_PS5_WINSYS_PUBLIC_H */

@@ -670,6 +670,7 @@ radv_ps5_cs_submit(struct radeon_winsys_ctx *rctx, const struct radv_winsys_subm
       submitted = radv_ps5_submit(words + start, end - start, queue->marker, (uint32_t)seq);
    }
    util_dynarray_fini(&starts);
+   radv_ps5_record_submission(queue, count, parts, wait_count, signal_count, submit->queue_index, depends);
    radv_ps5_note_submission(count, copy_start - claim_start, copy_end - copy_start);
    simple_mtx_unlock(&queue->submit_lock);
    if (submitted != 0) {

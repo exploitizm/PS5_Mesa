@@ -25,6 +25,10 @@
 #include "ac_shader_util.h"
 #include "aco_interface.h"
 #include "vk_shader_module.h"
+#if defined(RADV_PS5)
+#include "winsys/ps5/radv_ps5_winsys_public.h" /* ProsperoEden: tools/patch-radv-submission-dump.py */
+#include "radv_gs_compute.h"
+#endif
 
 bool
 radv_pipeline_skip_shaders_cache(const struct radv_device *device, const struct radv_pipeline *pipeline)
@@ -1238,9 +1242,52 @@ radv_print_pso_history(const struct radv_pipeline *pipeline, const struct radv_s
    fflush(output);
 }
 
+#if defined(RADV_PS5)
+/* ProsperoEden (tools/patch-radv-submission-dump.py): where each of the pipeline's shaders sits on
+ * the GPU, with the pipeline's hash and handle, so the winsys's stall dump can say whose code a
+ * stuck draw or dispatch was running. */
+static void
+radv_ps5_note_pipeline_shaders(struct radv_pipeline *pipeline)
+{
+   /* RADV_GS_COMPUTE_VS onwards (radv_gs_compute_index). */
+   static const char *const gs_compute_names[RADV_GS_COMPUTE_SHADERS] = {
+      "GS-as-compute VS", "GS-as-compute COUNT", "GS-as-compute PRE_GS",
+      "GS-as-compute MAIN", "GS-as-compute TCS", "GS-as-compute TES",
+   };
+   uint32_t kind;
+   if (pipeline->type == RADV_PIPELINE_GRAPHICS || pipeline->type == RADV_PIPELINE_GRAPHICS_LIB)
+      kind = RADV_PS5_SHADER_GRAPHICS;
+   else if (pipeline->type == RADV_PIPELINE_COMPUTE)
+      kind = RADV_PS5_SHADER_COMPUTE;
+   else
+      return;
+   if (pipeline->is_internal)
+      kind |= RADV_PS5_SHADER_INTERNAL;
+   const uint64_t handle = (uint64_t)(uintptr_t)radv_pipeline_to_handle(pipeline);
+   for (unsigned i = 0; i < MESA_VULKAN_SHADER_STAGES; i++) {
+      const struct radv_shader *const shader = pipeline->shaders[i];
+      if (shader)
+         radv_ps5_note_shader(shader->va, shader->code_size, _mesa_shader_stage_to_abbrev(i), kind,
+                              pipeline->pipeline_hash, handle);
+   }
+   if (pipeline->gs_copy_shader)
+      radv_ps5_note_shader(pipeline->gs_copy_shader->va, pipeline->gs_copy_shader->code_size, "GS copy", kind,
+                           pipeline->pipeline_hash, handle);
+   for (unsigned i = 0; pipeline->gs_compute && i < RADV_GS_COMPUTE_SHADERS; i++) {
+      const struct radv_shader *const shader = pipeline->gs_compute->shaders[i];
+      if (shader)
+         radv_ps5_note_shader(shader->va, shader->code_size, gs_compute_names[i], kind, pipeline->pipeline_hash,
+                              handle);
+   }
+}
+#endif
+
 void
 radv_pipeline_report_pso_history(const struct radv_device *device, struct radv_pipeline *pipeline)
 {
+#if defined(RADV_PS5)
+   radv_ps5_note_pipeline_shaders(pipeline); /* ProsperoEden: tools/patch-radv-submission-dump.py */
+#endif
    const struct radv_physical_device *pdev = radv_device_physical(device);
    const struct radv_instance *instance = radv_physical_device_instance(pdev);
    FILE *output = instance->pso_history_logfile ? instance->pso_history_logfile : stderr;
