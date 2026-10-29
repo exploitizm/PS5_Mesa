@@ -1030,9 +1030,8 @@ disk_cache_generate_cache_dir(void *mem_ctx, const char *gpu_name,
 bool
 disk_cache_enabled()
 {
-   /* If running as a users other than the real user disable cache */
-   if (!__normal_user())
-      return false;
+   /* ProsperoEden: the console app's ids may differ after elevation; its cache folder is its
+    * own, so the cache stays on (tools/patch-radv-disk-cache.py). */
 
    /* At user request, disable shader cache entirely.
     * Disk cache is not enabled by default for android, for most
