@@ -86,6 +86,10 @@ radv_gs_compute_setup(global struct radv_gs_compute_setup *s)
    if (!ok) {
       vertex_count = 0;
       instance_count = 0;
+      /* ProsperoEden: nothing must read through a null pointer when the draw is dropped. */
+      vp->output_buffer = (uintptr_t)block->ro_sink;
+      p->count_buffer = (global uint *)block->ro_sink;
+      p->output_index_buffer = (global uint *)block->ro_sink;
    }
 
    poly_vertex_params_set_draw(vp, vertex_count, instance_count);

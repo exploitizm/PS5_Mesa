@@ -14396,6 +14396,14 @@ radv_gs_compute_prepare(struct radv_cmd_buffer *cmd_buffer, const struct radv_gs
    poly_vertex_params_init(vp, gsc->vs_outputs, wg_size);
    poly_geometry_params_init(gp, mode, wg_size);
 
+   /* ProsperoEden: pointers the GPU fills in only for a draw that fits start at the sink, not 0
+    * (a dropped draw read them as 0 and faulted the GPU in a game's battles). */
+   const uint64_t null_sink = radv_gs_compute_upload(cmd_buffer, 256, NULL, NULL);
+   vp->output_buffer = null_sink;
+   vp->index_buffer = null_sink;
+   gp->count_buffer = (uint64_t)null_sink;
+   gp->output_index_buffer = (uint64_t)null_sink;
+
    /* Primitives generated and written per stream count into the command
     * buffer's counters, which queries sample. */
    const uint64_t sink = radv_gs_compute_upload(cmd_buffer, 256, NULL, NULL);
