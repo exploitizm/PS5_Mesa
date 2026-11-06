@@ -26,6 +26,7 @@
 /* ------------------------------------------------------------------ queue */
 
 static struct radv_ps5_queue radv_ps5_queue_storage;
+static void radv_ps5_offer_stall_dump(void);
 static struct radv_ps5_queue *radv_ps5_queue_instance;
 static once_flag radv_ps5_queue_once = ONCE_FLAG_INIT;
 
@@ -50,6 +51,7 @@ radv_ps5_queue_create(void)
    mtx_init(&queue->sync_lock, mtx_plain);
    cnd_init(&queue->sync_cond);
    radv_ps5_queue_instance = queue;
+   radv_ps5_offer_stall_dump();
 }
 
 struct radv_ps5_queue *
@@ -892,6 +894,40 @@ radv_ps5_queue_wait_seq(struct radv_ps5_queue *queue, uint64_t seq, uint64_t abs
       else
          radv_ps5_sleep_us(1000);
    }
+}
+
+/* EglantinePS5: the stall dump when the app's hang watch sees no frame for a while
+ * (headless/crash_report.cpp, eden_radv_stall_dump). radv_ps5_queue_wait_seq's ten-second check
+ * runs only while a thread polls a submission's marker; a hang where the submitting thread is
+ * blocked in sceAgcDriverSubmitDcb and every other thread waits on a Vulkan semaphore never reaches
+ * it, and said nothing. Dumps when the oldest submission still in flight has not completed, as
+ * that check would; the dump itself runs once per process and is lock-free. Never creates the
+ * queue. */
+static void
+radv_ps5_dump_stall_now(void)
+{
+   struct radv_ps5_queue *const queue = p_atomic_read(&radv_ps5_queue_instance);
+   if (!queue)
+      return;
+   const uint64_t completed = radv_ps5_queue_poll(queue);
+   const uint64_t submitted = p_atomic_read(&queue->submitted_seq);
+   if (completed >= submitted) {
+      fprintf(stderr, "radv/ps5: stall dump asked: the GPU has run every submission (%" PRIu64 ")\n", completed);
+      return;
+   }
+   fprintf(stderr, "radv/ps5: stall dump asked: the GPU has run submission %" PRIu64 " of %" PRIu64 "\n", completed,
+           submitted);
+   radv_ps5_dump_stall(queue, completed + 1, completed);
+}
+
+/* The app's hook for it: a pointer the app defines (weak here, so a program without it links). */
+extern void (*eden_radv_stall_dump)(void) __attribute__((weak));
+
+static void
+radv_ps5_offer_stall_dump(void)
+{
+   if (&eden_radv_stall_dump)
+      p_atomic_set(&eden_radv_stall_dump, radv_ps5_dump_stall_now);
 }
 
 /* ----------------------------------------------------------- the GPU itself */
