@@ -30,6 +30,9 @@
 #include "radv_entrypoints.h"
 #include "radv_instance.h"
 #include "radv_physical_device.h"
+#ifdef RADV_GS_COMPUTE
+#include "radv_mesh_compute.h"
+#endif
 #include "radv_pipeline_rt.h"
 #include "radv_video.h"
 #include "radv_wsi.h"
@@ -389,6 +392,15 @@ radv_device_get_cache_uuid(struct radv_physical_device *pdev, void *uuid)
 #if AMD_LLVM_AVAILABLE
    if (pdev->use_llvm && !disk_cache_get_function_identifier(LLVMInitializeAMDGPUTargetInfo, &ctx))
       return -1;
+#endif
+
+#ifdef RADV_GS_COMPUTE
+   {
+      /* Whether emulated task draws' mesh shaders run as compute (radv_mesh_compute.h): their
+       * pipelines are compiled differently. */
+      const uint8_t mesh_compute = radv_mesh_compute_enabled();
+      _mesa_blake3_update(&ctx, &mesh_compute, sizeof(mesh_compute));
+   }
 #endif
 
    _mesa_blake3_final(&ctx, blake3);

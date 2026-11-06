@@ -2846,6 +2846,10 @@ radv_graphics_shaders_compile(const struct radv_compiler_info *compiler_info, st
 
    if (gs_compute_rast)
       radv_gs_compute_lower_sysvals(stages[MESA_SHADER_VERTEX].nir, compiler_info, &stages[MESA_SHADER_VERTEX]);
+#ifdef RADV_GS_COMPUTE
+   if (mesh_compute_used)
+      radv_mesh_compute_lower_block(stages[MESA_SHADER_VERTEX].nir, &stages[MESA_SHADER_VERTEX]);
+#endif
 
    radv_foreach_stage (i, active_nir_stages) {
       int64_t stage_start = os_time_get_nano();
@@ -3122,11 +3126,10 @@ radv_graphics_pipeline_compile(struct radv_graphics_pipeline *pipeline, const Vk
    }
 
 #ifdef RADV_GS_COMPUTE
-   /* An emulated task shader's mesh shader may run as compute (radv_mesh_compute.h): not cached, and
-    * not taken from the cache either, where it may be as a mesh shader. Its buffer comes first:
-    * the shaders name it by address. */
+   /* An emulated task shader's mesh shader may run as compute (radv_mesh_compute.h), whose draws
+    * need the device's buffer. Whether that path is on is in the cache's UUID
+    * (radv_device_get_cache_uuid). */
    if (stages[MESA_SHADER_TASK].stage != MESA_SHADER_NONE && device->task_emu_bo && radv_mesh_compute_enabled()) {
-      skip_shaders_cache = true;
       result = radv_mesh_compute_init(device);
       if (result != VK_SUCCESS)
          return result;
@@ -3210,15 +3213,15 @@ radv_graphics_pipeline_compile(struct radv_graphics_pipeline *pipeline, const Vk
    }
 
    if (gs_compute.mesh_used) {
-      /* Its compute pass is not in the shaders cache, and the pass and the copy name the device's
-       * buffers by address. */
-      skip_shaders_cache = true;
+      /* Cached with the pipeline (radv_pipeline_cache_insert). */
       if (gs_compute.mesh_binary)
          pipeline->base.mesh_compute =
-            radv_shader_create(device, cache, gs_compute.mesh_binary, true, &gs_compute.mesh_debug);
+            radv_shader_create(device, cache, gs_compute.mesh_binary, skip_shaders_cache, &gs_compute.mesh_debug);
       pipeline->base.mesh_compute_vertices_per_workgroup = gs_compute.mesh_vertices_per_workgroup;
       pipeline->base.mesh_compute_capacity = gs_compute.mesh_capacity;
       free(gs_compute.mesh_binary);
+      if (!pipeline->base.mesh_compute)
+         skip_shaders_cache = true;
    }
 
    if (!skip_shaders_cache) {

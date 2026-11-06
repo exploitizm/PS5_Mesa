@@ -23,10 +23,6 @@
 #include <stdio.h>
 #include <stdlib.h>
 
-uint64_t radv_mesh_compute_task_emu_va;
-uint64_t radv_mesh_compute_header_va;
-uint64_t radv_mesh_compute_slots_va;
-
 bool
 radv_mesh_compute_enabled(void)
 {
@@ -65,8 +61,6 @@ radv_mesh_compute_init(struct radv_device *device)
          if (result != VK_SUCCESS) {
             radv_bo_destroy(device, NULL, bo);
          } else {
-            radv_mesh_compute_header_va = radv_buffer_get_va(bo);
-            radv_mesh_compute_slots_va = radv_mesh_compute_header_va + RADV_MESH_COMPUTE_HEADER_BYTES;
             p_atomic_set(&device->mesh_compute_bo, bo);
          }
       }
@@ -85,7 +79,41 @@ struct mesh_compute_layout {
    unsigned stride;      /* a slot */
    unsigned capacity;    /* slots in a pass */
    unsigned payload_stride;
+   uint32_t address32_hi; /* of the block (radv_mesh_compute_block) */
 };
+
+/* The block's address until the shader's arguments are declared (radv_mesh_compute_lower_block). */
+#define BLOCK_ARG_PLACEHOLDER 0xffffu
+
+/* A 64-bit field of the draw's block (radv_mesh_compute_block). */
+static nir_def *
+block_field(nir_builder *b, const struct mesh_compute_layout *l, unsigned offset)
+{
+   nir_def *arg = nir_load_scalar_arg_amd(b, 1, .base = BLOCK_ARG_PLACEHOLDER);
+   nir_def *block = nir_pack_64_2x32_split(b, arg, nir_imm_int(b, l->address32_hi));
+   return nir_pack_64_2x32(b, ac_nir_load_smem(b, 2, block, nir_imm_int(b, offset), 8, ACCESS_CAN_SPECULATE));
+}
+
+static bool
+lower_block_arg(nir_builder *b, nir_intrinsic_instr *intr, void *data)
+{
+   const struct radv_shader_args *args = data;
+   if (intr->intrinsic != nir_intrinsic_load_scalar_arg_amd || nir_intrinsic_base(intr) != BLOCK_ARG_PLACEHOLDER)
+      return false;
+   b->cursor = nir_before_instr(&intr->instr);
+   nir_def_replace(&intr->def, ac_nir_load_arg(b, &args->ac, args->gs_compute_draw));
+   return true;
+}
+
+bool
+radv_mesh_compute_lower_block(nir_shader *nir, const struct radv_shader_stage *stage)
+{
+   bool progress = false;
+   assert(stage->args.gs_compute_draw.used);
+   NIR_PASS(progress, nir, nir_shader_intrinsics_pass, lower_block_arg, nir_metadata_control_flow,
+            (void *)&stage->args);
+   return progress;
+}
 
 static const uint64_t allowed_vertex_outputs = VARYING_BIT_POS | BITFIELD64_RANGE(VARYING_SLOT_VAR0, 32);
 
@@ -96,7 +124,7 @@ radv_mesh_compute_wanted(const struct radv_graphics_state_key *gfx_state, const 
    const nir_shader *task = stages[MESA_SHADER_TASK].nir;
    const nir_shader *fs = stages[MESA_SHADER_FRAGMENT].nir;
 
-   if (!mesh || !task || !radv_mesh_compute_enabled() || !radv_mesh_compute_slots_va)
+   if (!mesh || !task || !radv_mesh_compute_enabled())
       return false;
 
    /* First slice: triangles, outputs that are positions and generic varyings, no
@@ -155,8 +183,8 @@ build_copy_vs(const nir_shader_compiler_options *options, const struct mesh_comp
    nir_def *in_buffer = nir_ult_imm(&b, wg, l->capacity);
    wg = nir_umin(&b, wg, nir_imm_int(&b, l->capacity - 1));
 
-   nir_def *slot =
-      nir_iadd(&b, nir_imm_int64(&b, radv_mesh_compute_slots_va), nir_u2u64(&b, nir_imul_imm(&b, wg, l->stride)));
+   nir_def *slot = nir_iadd(&b, block_field(&b, l, offsetof(struct radv_mesh_compute_block, slots)),
+                            nir_u2u64(&b, nir_imul_imm(&b, wg, l->stride)));
    nir_def *counts = nir_build_load_global(&b, 2, 32, slot, .align_mul = 8);
    nir_def *num_vtx = nir_umin(&b, nir_channel(&b, counts, 0), nir_imm_int(&b, l->max_vertices));
    nir_def *num_prm = nir_umin(&b, nir_channel(&b, counts, 1), nir_imm_int(&b, l->max_primitives));
@@ -198,6 +226,7 @@ struct lower_state {
    nir_def *index; /* the workgroup's index in its grid */
    nir_def *entry; /* its task workgroup's ring entry */
    nir_def *draw_id;
+   nir_def *payload; /* the task payload ring */
 };
 
 static nir_def *
@@ -256,8 +285,7 @@ lower_mesh_intrinsic(nir_builder *b, nir_intrinsic_instr *intr, void *data)
       return true;
    case nir_intrinsic_load_task_payload: {
       nir_def *base = nir_iadd_imm(b, nir_imul_imm(b, s->entry, l->payload_stride), nir_intrinsic_base(intr));
-      nir_def *addr = nir_iadd(b, nir_imm_int64(b, radv_mesh_compute_task_emu_va + RADV_TASK_EMU_PAYLOAD_OFFSET),
-                               nir_u2u64(b, nir_iadd(b, base, intr->src[0].ssa)));
+      nir_def *addr = nir_iadd(b, s->payload, nir_u2u64(b, nir_iadd(b, base, intr->src[0].ssa)));
       nir_def *value = nir_build_load_global(b, intr->def.num_components, intr->def.bit_size, addr, .align_mul = 4);
       nir_def_replace(&intr->def, value);
       return true;
@@ -334,7 +362,7 @@ lower_mesh_to_compute(nir_shader *nir, const struct mesh_compute_layout *l)
    nir_def *raw = nir_load_workgroup_id(&b);
    struct lower_state s = {.l = l, .raw_workgroup_id = nir_def_instr(raw)};
    nir_def *wg = nir_channel(&b, raw, 0);
-   nir_def *header = nir_imm_int64(&b, radv_mesh_compute_header_va);
+   nir_def *header = block_field(&b, l, offsetof(struct radv_mesh_compute_block, header));
    nir_def *base = nir_build_load_global(&b, 1, 32, nir_iadd_imm(&b, header, RADV_MESH_COMPUTE_HEADER_BASE),
                                          .align_mul = 4, .access = ACCESS_COHERENT);
    nir_def *records = nir_build_load_global(&b, 1, 32, nir_iadd_imm(&b, header, RADV_MESH_COMPUTE_HEADER_RECORDS),
@@ -344,7 +372,8 @@ lower_mesh_to_compute(nir_shader *nir, const struct mesh_compute_layout *l)
    /* Its task workgroup's record (radv_mesh_draw_record, a task workgroup each, in order): the last
     * whose first mesh workgroup is not past it. The records' index is the task workgroup's ring
     * entry. */
-   nir_def *records_va = nir_imm_int64(&b, radv_mesh_compute_task_emu_va + RADV_TASK_EMU_RECORDS_OFFSET);
+   nir_def *records_va = block_field(&b, l, offsetof(struct radv_mesh_compute_block, records));
+   s.payload = block_field(&b, l, offsetof(struct radv_mesh_compute_block, payload));
    nir_variable *lo_var = nir_local_variable_create(b.impl, glsl_uint_type(), "record_lo");
    nir_variable *hi_var = nir_local_variable_create(b.impl, glsl_uint_type(), "record_hi");
    nir_store_var(&b, lo_var, nir_imm_int(&b, 0), 0x1);
@@ -379,7 +408,7 @@ lower_mesh_to_compute(nir_shader *nir, const struct mesh_compute_layout *l)
                                      nir_iadd_imm(&b, record, offsetof(struct radv_mesh_draw_record, task_draw_id)),
                                      .align_mul = 4);
    nir_def *slot_index = nir_umin(&b, wg, nir_imm_int(&b, l->capacity - 1));
-   s.slot = nir_iadd(&b, nir_imm_int64(&b, radv_mesh_compute_slots_va),
+   s.slot = nir_iadd(&b, block_field(&b, l, offsetof(struct radv_mesh_compute_block, slots)),
                      nir_u2u64(&b, nir_imul_imm(&b, slot_index, l->stride)));
 
    /* No counts until the shader sets them: a workgroup that never does draws nothing. */
@@ -408,6 +437,7 @@ radv_mesh_compute_split(const struct radv_compiler_info *compiler_info, struct r
    l.capacity = MIN2((RADV_MESH_COMPUTE_BYTES - RADV_MESH_COMPUTE_HEADER_BYTES) / l.stride,
                      RADV_MESH_COMPUTE_CHUNK_WORKGROUPS);
    l.payload_stride = align(MAX2(stages[MESA_SHADER_TASK].nir->info.task_payload_size, 16), 16);
+   l.address32_hi = compiler_info->hw.address32_hi;
 
    nir_shader *vs = build_copy_vs(mesh->options, &l, compiler_info->key.ge_wave_size);
    lower_mesh_to_compute(mesh, &l);
@@ -423,6 +453,8 @@ radv_mesh_compute_split(const struct radv_compiler_info *compiler_info, struct r
    vs_stage->stage = MESA_SHADER_VERTEX;
    vs_stage->nir = vs;
    vs_stage->next_stage = MESA_SHADER_FRAGMENT;
+   /* Its block argument, as a geometry shader's rasterization copy has (RADV_GS_COMPUTE_RAST). */
+   vs_stage->gs_compute_rast = true;
 
    ms->nir = NULL;
    ms->stage = MESA_SHADER_NONE;
@@ -468,6 +500,8 @@ radv_mesh_compute_compile(const struct radv_compiler_info *compiler_info, struct
    radv_nir_shader_info_init(MESA_SHADER_COMPUTE, MESA_SHADER_NONE, &stage.info);
    radv_nir_shader_info_pass(compiler_info, nir, &stage.layout, &stage.key, NULL, RADV_PIPELINE_COMPUTE, false,
                              &stage.info);
+   /* Its block argument (radv_mesh_compute_block). */
+   stage.info.gs_compute = RADV_GS_COMPUTE_MESH;
    /* A graphics stage still, as radv_gs_compute_compile's passes are. */
    if (stage.info.loads_dynamic_offsets && stage.layout.independent_sets)
       stage.info.loads_dynamic_descriptors_offset_addr = true;
@@ -476,6 +510,7 @@ radv_mesh_compute_compile(const struct radv_compiler_info *compiler_info, struct
    stage.info.user_sgprs_locs = stage.args.user_sgprs_locs;
    stage.info.inline_push_constant_mask = stage.args.ac.inline_push_const_mask;
 
+   radv_mesh_compute_lower_block(nir, &stage);
    NIR_PASS(_, nir, nir_lower_compute_system_values, &compute_sysval_options);
    radv_optimize_nir(nir, stage.key.optimisations_disabled);
    radv_postprocess_nir(compiler_info, NULL, &stage);

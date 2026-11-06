@@ -415,7 +415,15 @@ radv_graphics_pipeline_cache_search(struct radv_device *device, struct vk_pipeli
 
    for (unsigned i = 0; i < pipeline_obj->num_shaders; i++) {
       mesa_shader_stage s = pipeline_obj->shaders[i]->info.stage;
-      if (s == MESA_SHADER_VERTEX && i > 0) {
+      if (s == MESA_SHADER_COMPUTE) {
+         /* A mesh shader run as compute (radv_mesh_compute.h), placed last, its counts in the
+          * object's data. */
+         const uint32_t *counts = pipeline_obj->data;
+         assert(i == pipeline_obj->num_shaders - 1 && pipeline_obj->data_size == 2 * sizeof(uint32_t));
+         pipeline->base.mesh_compute = radv_shader_ref(pipeline_obj->shaders[i]);
+         pipeline->base.mesh_compute_vertices_per_workgroup = counts[0];
+         pipeline->base.mesh_compute_capacity = counts[1];
+      } else if (s == MESA_SHADER_VERTEX && i > 0) {
          /* The GS copy-shader is a VS placed after all other stages */
          assert(i == pipeline_obj->num_shaders - 1 && pipeline->base.shaders[MESA_SHADER_GEOMETRY]);
          pipeline->base.gs_copy_shader = radv_shader_ref(pipeline_obj->shaders[i]);
@@ -459,9 +467,11 @@ radv_pipeline_cache_insert(struct radv_device *device, struct vk_pipeline_cache 
    for (unsigned i = 0; i < MESA_VULKAN_SHADER_STAGES; ++i)
       num_shaders += pipeline->shaders[i] ? 1 : 0;
    num_shaders += pipeline->gs_copy_shader ? 1 : 0;
+   num_shaders += pipeline->mesh_compute ? 1 : 0;
 
    struct radv_pipeline_cache_object *pipeline_obj;
-   pipeline_obj = radv_pipeline_cache_object_create(&device->vk, num_shaders, pipeline->blake3, 0);
+   pipeline_obj = radv_pipeline_cache_object_create(&device->vk, num_shaders, pipeline->blake3,
+                                                    pipeline->mesh_compute ? 2 * sizeof(uint32_t) : 0);
 
    if (!pipeline_obj)
       return;
@@ -474,6 +484,13 @@ radv_pipeline_cache_insert(struct radv_device *device, struct vk_pipeline_cache 
    /* Place the GS copy-shader after all other stages */
    if (pipeline->gs_copy_shader)
       pipeline_obj->shaders[idx++] = radv_shader_ref(pipeline->gs_copy_shader);
+   /* A mesh shader run as compute last, its counts in the data (radv_graphics_pipeline_cache_search). */
+   if (pipeline->mesh_compute) {
+      uint32_t *counts = pipeline_obj->data;
+      pipeline_obj->shaders[idx++] = radv_shader_ref(pipeline->mesh_compute);
+      counts[0] = pipeline->mesh_compute_vertices_per_workgroup;
+      counts[1] = pipeline->mesh_compute_capacity;
+   }
 
    assert(idx == num_shaders);
 

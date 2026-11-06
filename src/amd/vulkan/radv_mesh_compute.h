@@ -47,19 +47,22 @@
 struct radv_compiler_info;
 struct radv_graphics_state_key;
 
-/* The device's buffers the shaders name by address (set at device creation; these pipelines
- * are not cached, radv_graphics_pipeline_compile). */
-extern uint64_t radv_mesh_compute_task_emu_va;
-extern uint64_t radv_mesh_compute_header_va;
-extern uint64_t radv_mesh_compute_slots_va;
+/* Where a draw's buffers are, for the compute pass and the copy: uploaded per draw, and named by
+ * the shaders' gs_compute_draw argument (AC_UD_CS_GS_COMPUTE_DRAW, AC_UD_VS_GS_COMPUTE_DRAW), so
+ * the shaders hold no address and their pipelines can be cached. */
+struct radv_mesh_compute_block {
+   uint64_t records; /* the task emulation's records (radv_mesh_draw_record) */
+   uint64_t payload; /* its task payload ring */
+   uint64_t header;  /* the device's buffer */
+   uint64_t slots;   /* its slots, after the header */
+};
 
 /* Whether mesh shaders of emulated task draws take this path: unless
  * /data/eglantineps5/radv-mesh-compute.txt says 0 (read once). */
 bool radv_mesh_compute_enabled(void);
 
 struct radv_device;
-/* The device's buffer, made once (the first pipeline with a task shader, before its shaders are
- * compiled, since they name it by address). */
+/* The device's buffer, made once (the first pipeline with a task shader). */
 VkResult radv_mesh_compute_init(struct radv_device *device);
 
 struct radv_mesh_compute_split {
@@ -80,6 +83,10 @@ bool radv_mesh_compute_wanted(const struct radv_graphics_state_key *gfx_state,
  * copy vertex shader; the mesh stage is left empty. */
 void radv_mesh_compute_split(const struct radv_compiler_info *compiler_info, struct radv_shader_stage *stages,
                              struct radv_mesh_compute_split *out);
+
+/* The block's address in a shader of this path, once its arguments are declared (the copy vertex
+ * shader's in the pipeline compile, the compute pass's in radv_mesh_compute_compile). */
+bool radv_mesh_compute_lower_block(nir_shader *nir, const struct radv_shader_stage *stage);
 
 struct radv_shader_binary *radv_mesh_compute_compile(const struct radv_compiler_info *compiler_info,
                                                      struct radv_mesh_compute_split *split,
