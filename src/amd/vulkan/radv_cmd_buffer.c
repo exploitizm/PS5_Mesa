@@ -15431,6 +15431,14 @@ struct radv_task_emu {
    uint64_t draw_ring_va;
 };
 
+#ifdef RADV_PS5
+#include <inttypes.h>
+#include <stdio.h>
+#include "util/u_atomic.h"
+/* radv_ps5_winsys.c: what its stall dump shows of the last emulated task draw. */
+extern uint64_t radv_ps5_task_emu_note[8];
+#endif
+
 static bool
 radv_task_emu_begin(struct radv_cmd_buffer *cmd_buffer, struct radv_task_emu *emu)
 {
@@ -15466,6 +15474,34 @@ radv_task_emu_begin(struct radv_cmd_buffer *cmd_buffer, struct radv_task_emu *em
    emu->rings_va = radv_buffer_get_va(cmd_buffer->upload.upload_bo) + offset;
 
    radv_cs_add_buffer(device->ws, cmd_buffer->cs->b, device->task_emu_bo);
+
+#ifdef RADV_PS5
+   {
+      const struct radv_shader *mesh = cmd_buffer->state.shaders[MESA_SHADER_MESH];
+      const bool publishes = mesh && radv_ms_publishes(&mesh->info);
+      uint64_t *const note = radv_ps5_task_emu_note;
+      note[1] = publishes ? radv_buffer_get_va(device->ms_publish_ring) : 0;
+      note[2] = emu->entries;
+      note[3] = stride;
+      note[4] = (mesh ? mesh->info.ms.prim_parts : 0xff) | (uint64_t)publishes << 8 |
+                (uint64_t)(mesh && mesh->info.ms.has_query) << 16 | (uint64_t)task->info.cs.has_query << 24;
+      note[5] = (uint64_t)(cmd_buffer->state.active_occlusion_queries & 0xffff) |
+                (uint64_t)(radv_get_num_pipeline_stat_queries(cmd_buffer) & 0xffff) << 16 |
+                (uint64_t)cmd_buffer->state.active_prims_gen_queries << 32;
+      note[6]++;
+      note[7] = mesh ? mesh->va : 0;
+      note[0] = va;
+      static uint32_t told;
+      if (told < 8 && p_atomic_inc_return(&told) <= 8)
+         fprintf(stderr,
+                 "radv/ps5 task-emu: entries %u stride %u mesh parts %u publishes %u mesh query %u task query %u"
+                 " occlusion %u stats %u prims-gen %u task 0x%" PRIx64 " mesh 0x%" PRIx64 " multiview 0x%x\n",
+                 emu->entries, stride, (unsigned)(note[4] & 0xff), publishes, (unsigned)((note[4] >> 16) & 1),
+                 (unsigned)task->info.cs.has_query, cmd_buffer->state.active_occlusion_queries,
+                 radv_get_num_pipeline_stat_queries(cmd_buffer), cmd_buffer->state.active_prims_gen_queries,
+                 task->va, note[7], cmd_buffer->state.render.view_mask);
+   }
+#endif
    return true;
 }
 

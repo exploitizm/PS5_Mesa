@@ -547,6 +547,74 @@ radv_ps5_dump_wait_state(const struct radv_ps5_stall_wait *w, bool reached, bool
    }
 }
 
+/* What the stall dump shows of the last emulated task draw (radv_cmd_buffer.c, radv_task_emu_begin):
+ * [0] the task emulation buffer, [1] the publish ring (0 when the mesh shader does not publish),
+ * [2] ring entries, [3] payload stride, [4] mesh prim_parts | publishes << 8 | mesh has_query << 16 |
+ * task has_query << 24, [5] occlusion | pipeline-stat << 16 | prims-gen << 32 queries active,
+ * [6] task draws recorded, [7] mesh shader address. */
+uint64_t radv_ps5_task_emu_note[8];
+
+static void
+radv_ps5_dump_words(const char *what, uint64_t va, uint32_t dwords)
+{
+   for (uint32_t k = 0; k < dwords; k += 8) {
+      fprintf(stderr, "radv/ps5 stall: %s +0x%03x:", what, k * 4);
+      for (uint32_t j = k; j < k + 8 && j < dwords; j++) {
+         uint32_t v;
+         if (radv_ps5_stall_read(va + 4 * j, &v))
+            fprintf(stderr, " %08x", v);
+         else
+            fprintf(stderr, " ????????");
+      }
+      fprintf(stderr, "\n");
+   }
+}
+
+static void
+radv_ps5_dump_task_emu(void)
+{
+   const uint64_t *const t = radv_ps5_task_emu_note;
+   if (!t[0])
+      return;
+   fprintf(stderr,
+           "radv/ps5 stall: task emulation: bo 0x%" PRIx64 " publish ring 0x%" PRIx64 " entries %" PRIu64
+           " stride %" PRIu64 " mesh parts %u publishes %u mesh query %u task query %u; queries occlusion %u"
+           " stats %u prims-gen %u; %" PRIu64 " task draws; mesh 0x%" PRIx64 "\n",
+           t[0], t[1], t[2], t[3], (unsigned)(t[4] & 0xff), (unsigned)((t[4] >> 8) & 0xff),
+           (unsigned)((t[4] >> 16) & 0xff), (unsigned)((t[4] >> 24) & 0xff), (unsigned)(t[5] & 0xffff),
+           (unsigned)((t[5] >> 16) & 0xffff), (unsigned)(t[5] >> 32), t[6], t[7]);
+   radv_ps5_dump_words("records", t[0] /* RADV_TASK_EMU_RECORDS_OFFSET */, 2 * 16);
+   radv_ps5_dump_words("draw ring", t[0] + 65536u * 64u /* RADV_TASK_EMU_DRAW_RING_OFFSET */, 4 * 4);
+   radv_ps5_dump_words("payload", t[0] + 65536u * 64u + 65536u * 16u /* RADV_TASK_EMU_PAYLOAD_OFFSET */,
+                       t[3] ? (uint32_t)MIN2(t[3] / 4 * 2, 64) : 16);
+   if (t[1])
+      radv_ps5_dump_words("publish headers", t[1], 16);
+   fflush(stderr);
+}
+
+/* Every packet from the last wait the GPU passed to a little past where it stopped: opcode, length
+ * and the first body dwords. */
+static void
+radv_ps5_dump_packets(const uint32_t *words, uint32_t count, uint32_t from, uint32_t to)
+{
+   uint32_t at = 0, op, n, shown = 0;
+   fprintf(stderr, "radv/ps5 stall: packets from dword %u to %u:\n", from, to);
+   for (; at < count && at <= to && radv_ps5_stall_packet(words, count, at, &op, &n); at += n) {
+      if (at < from || op == UINT32_MAX)
+         continue;
+      if (++shown > 400) {
+         fprintf(stderr, "radv/ps5 stall:   ...\n");
+         break;
+      }
+      const char *name = radv_ps5_pkt3_name(op);
+      fprintf(stderr, "radv/ps5 stall:   @%u op 0x%02x %s n=%u:", at, op, name ? name : "", n);
+      for (uint32_t k = 1; k < n && k <= 8; k++)
+         fprintf(stderr, " %08x", words[at + k]);
+      fprintf(stderr, "%s\n", n > 9 ? " ..." : "");
+   }
+   fflush(stderr);
+}
+
 /* The stuck submission, packet by packet: the waits it carries and what each reads now, the first
  * whose condition does not hold (where the in-order GPU stopped), the last draws and dispatches
  * before it with the program each runs, and whose code that is. */
@@ -805,6 +873,32 @@ radv_ps5_dump_stuck(const uint32_t *words, uint32_t count, uint64_t seq)
    if (wait_total + cond_total > lines)
       fprintf(stderr, "radv/ps5 stall:   (%u more not shown)\n", wait_total + cond_total - lines);
    fflush(stderr);
+
+   /* The waits around the stop, then every packet since the last wait the GPU passed. */
+   uint32_t from = 0;
+   if (stop_wait >= 0) {
+      const uint32_t first = stop_wait > 3 ? (uint32_t)stop_wait - 3 : 0;
+      for (uint32_t k = first; k < wait_count && k <= (uint32_t)stop_wait + 2; k++) {
+         const struct radv_ps5_stall_wait *const w = &waits[k];
+         fprintf(stderr, "radv/ps5 stall:   near the stop, %s %u at dword %u: ", w->number ? "wait" : "cond",
+                 w->number, w->at);
+         radv_ps5_dump_wait_text(w);
+         fprintf(stderr, ": ");
+         radv_ps5_dump_wait_state(w, (int)k <= stop_wait, (int)k == stop_wait);
+      }
+      for (int k = stop_wait - 1; k >= 0; k--) {
+         if (waits[k].op == PKT3_WAIT_REG_MEM) {
+            from = waits[k].at;
+            break;
+         }
+      }
+      if (stop - from > 6000)
+         from = stop - 6000;
+   } else {
+      from = parsed > 2000 ? parsed - 2000 : 0;
+   }
+   radv_ps5_dump_packets(words, count, from, stop + 64);
+   radv_ps5_dump_task_emu();
 }
 
 static void
