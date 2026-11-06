@@ -434,10 +434,15 @@ radv_mesh_compute_split(const struct radv_compiler_info *compiler_info, struct r
    l.max_primitives = mesh->info.mesh.max_primitives_out;
    l.prim_offset = 16 + l.max_vertices * l.num_vtx_slots * 16;
    l.stride = align(l.prim_offset + l.max_primitives * 4, 64);
-   l.capacity = MIN2((RADV_MESH_COMPUTE_BYTES - RADV_MESH_COMPUTE_HEADER_BYTES) / l.stride,
-                     RADV_MESH_COMPUTE_CHUNK_WORKGROUPS);
+   l.capacity = MIN2(RADV_MESH_COMPUTE_SLOTS_BYTES / l.stride, RADV_MESH_COMPUTE_CHUNK_WORKGROUPS);
    l.payload_stride = align(MAX2(stages[MESA_SHADER_TASK].nir->info.task_payload_size, 16), 16);
    l.address32_hi = compiler_info->hw.address32_hi;
+
+   static unsigned told;
+   if (p_atomic_inc_return(&told) <= 16)
+      fprintf(stderr,
+              "radv/ps5 mesh-compute: a slot of %u bytes (%u vertices of %u outputs, %u primitives), %u a pass\n",
+              l.stride, l.max_vertices, l.num_vtx_slots, l.max_primitives, l.capacity);
 
    nir_shader *vs = build_copy_vs(mesh->options, &l, compiler_info->key.ge_wave_size);
    lower_mesh_to_compute(mesh, &l);

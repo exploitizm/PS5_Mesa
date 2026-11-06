@@ -15747,6 +15747,7 @@ radv_mesh_compute_chunk(struct radv_cmd_buffer *cmd_buffer, const struct radv_ta
                         uint32_t draw_id, uint32_t count, uint64_t count_va)
 {
    struct radv_device *device = radv_cmd_buffer_device(cmd_buffer);
+   const struct radv_physical_device *pdev = radv_device_physical(device);
    const struct radv_pipeline *pipeline = &cmd_buffer->state.graphics_pipeline->base;
    struct radv_cmd_stream *cs = cmd_buffer->cs;
    const uint32_t capacity = pipeline->mesh_compute_capacity;
@@ -15763,6 +15764,22 @@ radv_mesh_compute_chunk(struct radv_cmd_buffer *cmd_buffer, const struct radv_ta
 
       /* The records pass, or the last pass's compute pass and copy, are done with the header. */
       radv_emit_cache_flush(cmd_buffer);
+
+      /* A pass past the chunk's mesh workgroups (its dispatch's x 0) is skipped by the command
+       * processor. Its packets repeat the first pass's state, which always runs, and its flushes
+       * are events and cache invalidations only: skipping them leaves nothing waiting. They fit
+       * where they are reserved, so no chained buffer splits them. */
+      uint32_t cond_count = 0; /* the COND_EXEC's dword count, by index (0: none) */
+      uint32_t cond_start = 0;
+      if (pass > 0) {
+         assert(!(cmd_buffer->state.flush_bits & (RADV_CMD_FLAG_FLUSH_AND_INV_CB | RADV_CMD_FLAG_FLUSH_AND_INV_DB)));
+         radeon_check_space(device->ws, cs->b, RADV_MESH_COMPUTE_PASS_DWORDS);
+         ac_emit_cp_pfp_sync_me(cs->b, false);
+         ac_emit_cp_cond_exec(cs->b, pdev->info.gfx_level, args_va, 0);
+         cond_count = cs->b->cdw - 1;
+         cond_start = cs->b->cdw;
+      }
+
       radeon_check_space(device->ws, cs->b, 16);
       radv_cs_write_data(device, cs, V_371_MICRO_ENGINE, header_va + RADV_MESH_COMPUTE_HEADER_BASE, 1, &first, false);
 
@@ -15776,6 +15793,11 @@ radv_mesh_compute_chunk(struct radv_cmd_buffer *cmd_buffer, const struct radv_ta
       };
       radeon_check_space(device->ws, cs->b, 64);
       radv_emit_indirect_draw_packets(cmd_buffer, &rast);
+
+      if (cond_count) {
+         assert(cs->b->cdw > cond_start && cs->b->cdw - cond_start < RADV_MESH_COMPUTE_PASS_DWORDS);
+         cs->b->buf[cond_count] = cs->b->cdw - cond_start;
+      }
 
       /* The next pass or chunk writes the header and the slots the copy reads, and the rings. */
       cmd_buffer->state.flush_bits |= RADV_CMD_FLAG_VS_PARTIAL_FLUSH;

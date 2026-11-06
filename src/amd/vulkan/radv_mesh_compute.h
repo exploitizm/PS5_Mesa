@@ -20,7 +20,9 @@
  * that reads them. Per emulated task chunk: the task shader; the records pass
  * (radv_meta_mesh_compute_records: a record a task workgroup, with the mesh workgroups before it);
  * then per pass of up to capacity mesh workgroups, the compute pass (each workgroup finds its
- * record by binary search) and a triangle-list draw of 3 vertices per primitive slot.
+ * record by binary search) and a triangle-list draw of 3 vertices per primitive slot. Passes
+ * past the chunk's mesh workgroups are skipped by the command processor (COND_EXEC on the pass's
+ * workgroup count).
  *
  * The device's buffer (RADV_MESH_COMPUTE_BYTES): a header, then the slots.
  *
@@ -33,14 +35,20 @@
  * per-vertex outputs (16 bytes each, in the order of their varying slots), then max_primitives
  * triangles (their three vertex indices, a byte each, in a dword). */
 
-#define RADV_MESH_COMPUTE_BYTES          (128u << 20)
-#define RADV_MESH_COMPUTE_HEADER_BYTES   4096u
+/* The slots: a pass holds as many mesh workgroups as fit, so a mesh shader with large outputs
+ * runs more passes, which cost nothing when empty. */
+#define RADV_MESH_COMPUTE_SLOTS_BYTES    (16u << 20)
+#define RADV_MESH_COMPUTE_HEADER_BYTES   16384u
+#define RADV_MESH_COMPUTE_BYTES          (RADV_MESH_COMPUTE_HEADER_BYTES + RADV_MESH_COMPUTE_SLOTS_BYTES)
 #define RADV_MESH_COMPUTE_HEADER_BASE    0u  /* the pass's first mesh workgroup */
 #define RADV_MESH_COMPUTE_HEADER_RECORDS 4u  /* the chunk's records, then its mesh workgroups */
 #define RADV_MESH_COMPUTE_HEADER_PASSES  64u /* a pass's dispatch, then its draw */
 #define RADV_MESH_COMPUTE_PASS_BYTES     32u
 #define RADV_MESH_COMPUTE_MAX_PASSES                                                                \
    ((RADV_MESH_COMPUTE_HEADER_BYTES - RADV_MESH_COMPUTE_HEADER_PASSES) / RADV_MESH_COMPUTE_PASS_BYTES)
+/* The most a pass's packets take (radv_mesh_compute_chunk), reserved so a skipped pass is one
+ * span of the command buffer. */
+#define RADV_MESH_COMPUTE_PASS_DWORDS 2048u
 /* The mesh workgroups an emulated task chunk may have before the rest are left out. */
 #define RADV_MESH_COMPUTE_CHUNK_WORKGROUPS 65536u
 
