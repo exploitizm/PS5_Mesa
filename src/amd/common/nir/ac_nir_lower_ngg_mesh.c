@@ -721,7 +721,11 @@ ms_alloc_vertices_and_primitives(nir_builder *b, nir_def *num_vtx, nir_def *num_
       num_prm = ms_part_prims(b, num_prm, s);
       num_vtx = nir_imul_imm(b, num_prm, s->vertices_per_prim);
    }
-   ac_nir_ngg_alloc_vertices_and_primitives(b, num_vtx, num_prm, false);
+   /* GFX10 hangs when a workgroup allocates no primitive: such a workgroup
+    * exports a culled one instead, as the other NGG stages do. Mesh shaders
+    * meet it on GFX10 when a workgroup culls all its primitives.
+    */
+   ac_nir_ngg_alloc_vertices_and_primitives(b, num_vtx, num_prm, s->ac->has_ngg_fully_culled_bug);
 }
 
 static void
