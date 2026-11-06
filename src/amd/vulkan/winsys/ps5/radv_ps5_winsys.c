@@ -1003,8 +1003,20 @@ radv_ps5_dump_stall_now(void)
    struct radv_ps5_queue *const queue = p_atomic_read(&radv_ps5_queue_instance);
    if (!queue)
       return;
-   const uint64_t completed = radv_ps5_queue_poll(queue);
-   const uint64_t submitted = p_atomic_read(&queue->submitted_seq);
+   uint64_t completed = radv_ps5_queue_poll(queue);
+   uint64_t submitted = p_atomic_read(&queue->submitted_seq);
+   if (completed < submitted) {
+      /* A GPU merely behind (compiling shaders, say) moves on within a second: the dump, which
+       * runs once, is for one that has stopped. */
+      os_time_sleep(1000000);
+      const uint64_t later = radv_ps5_queue_poll(queue);
+      if (later > completed) {
+         fprintf(stderr, "radv/ps5: stall dump asked: the GPU is still running (submission %" PRIu64
+                 " to %" PRIu64 " in a second); not dumping\n", completed, later);
+         return;
+      }
+      submitted = p_atomic_read(&queue->submitted_seq);
+   }
    if (completed >= submitted) {
       fprintf(stderr, "radv/ps5: stall dump asked: the GPU has run every submission (%" PRIu64 ")\n", completed);
       return;
