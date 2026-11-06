@@ -99,6 +99,7 @@ nir_shader *radv_meta_nir_build_clear_hiz_compute_shader(uint32_t samples);
 
 nir_shader *radv_meta_nir_build_copy_memory_indirect_preprocess_cs(void);
 nir_shader *radv_meta_nir_build_mesh_draw_records_cs(void);
+nir_shader *radv_meta_nir_build_mesh_compute_records_cs(void);
 nir_shader *radv_meta_nir_build_task_chunks_cs(void);
 nir_shader *radv_meta_nir_build_copy_memory_indirect_cs(void);
 

@@ -7,6 +7,7 @@
  * SPDX-License-Identifier: MIT
  */
 
+#include "radv_mesh_compute.h"
 #include "radv_meta_nir.h"
 #include "radv_shader.h"
 #include "nir/nir_format_convert.h"
@@ -1567,6 +1568,102 @@ radv_meta_nir_build_mesh_draw_records_cs(void)
  * (radv_task_emu_block) and its dispatch's workgroups, 0 past the draw's, which
  * the chunk's records and draw take as their count. An invocation a chunk.
  */
+/* The records of an emulated task chunk whose mesh shader runs as compute (radv_mesh_compute.h):
+ * a record a task workgroup (its grid, task draw and first mesh workgroup, as the ordered records
+ * of radv_meta_nir_build_mesh_draw_records_cs), then in the header the count of records and of
+ * mesh workgroups, and each pass's dispatch (x, 1, 1, 0) and copy draw (x vertices a workgroup,
+ * 1, 0, 0), x being the pass's mesh workgroups, at most capacity.
+ */
+nir_shader *
+radv_meta_nir_build_mesh_compute_records_cs(void)
+{
+   nir_builder b = radv_meta_nir_init_shader(MESA_SHADER_COMPUTE, "meta_mesh_compute_records_cs");
+   /* One subgroup, whatever the wave size. */
+   b.shader->info.workgroup_size[0] = 32;
+
+   nir_def *indirect_addr = nir_load_push_constant(&b, 1, 64, nir_imm_int(&b, 0), .base = 0, .range = 8);
+   nir_def *records_addr = nir_load_push_constant(&b, 1, 64, nir_imm_int(&b, 0), .base = 8, .range = 8);
+   nir_def *count_addr = nir_load_push_constant(&b, 1, 64, nir_imm_int(&b, 0), .base = 16, .range = 8);
+   nir_def *stride = nir_load_push_constant(&b, 1, 32, nir_imm_int(&b, 0), .base = 24, .range = 4);
+   nir_def *max_count = nir_load_push_constant(&b, 1, 32, nir_imm_int(&b, 0), .base = 28, .range = 4);
+   nir_def *task_rings = nir_load_push_constant(&b, 1, 32, nir_imm_int(&b, 0), .base = 32, .range = 4);
+   nir_def *task_draw_id = nir_load_push_constant(&b, 1, 32, nir_imm_int(&b, 0), .base = 36, .range = 4);
+   nir_def *header_addr = nir_load_push_constant(&b, 1, 64, nir_imm_int(&b, 0), .base = 40, .range = 8);
+   nir_def *capacity = nir_load_push_constant(&b, 1, 32, nir_imm_int(&b, 0), .base = 48, .range = 4);
+   nir_def *vertices_per_workgroup = nir_load_push_constant(&b, 1, 32, nir_imm_int(&b, 0), .base = 52, .range = 4);
+   nir_def *passes = nir_load_push_constant(&b, 1, 32, nir_imm_int(&b, 0), .base = 56, .range = 4);
+
+   nir_push_if(&b, nir_ine_imm(&b, count_addr, 0));
+   nir_def *count = nir_umin(&b, nir_build_load_global(&b, 1, 32, count_addr, .align_mul = 4), max_count);
+   nir_pop_if(&b, NULL);
+   count = nir_if_phi(&b, count, max_count);
+
+   nir_variable *first_var = nir_local_variable_create(b.impl, glsl_uint_type(), "first_draw");
+   nir_variable *workgroups_var = nir_local_variable_create(b.impl, glsl_uint64_t_type(), "workgroups");
+   nir_store_var(&b, first_var, nir_imm_int(&b, 0), 0x1);
+   nir_store_var(&b, workgroups_var, nir_imm_int64(&b, 0), 0x1);
+
+   nir_def *lane = nir_load_local_invocation_index(&b);
+   nir_push_loop(&b);
+   {
+      nir_def *first = nir_load_var(&b, first_var);
+      nir_break_if(&b, nir_uge(&b, first, count));
+
+      nir_def *draw = nir_iadd(&b, first, lane);
+      nir_def *active = nir_ult(&b, draw, count);
+      nir_push_if(&b, active);
+      nir_def *grid = mesh_draw_grid(&b, draw, indirect_addr, stride);
+      nir_pop_if(&b, NULL);
+      grid = nir_if_phi(&b, grid, nir_imm_zero(&b, 3, 32));
+
+      nir_def *own = nir_imul(&b, nir_imul(&b, nir_channel(&b, grid, 0), nir_channel(&b, grid, 1)),
+                              nir_channel(&b, grid, 2));
+      nir_def *before = nir_exclusive_scan(&b, own, .reduction_op = nir_op_iadd);
+      nir_def *sum = nir_reduce(&b, own, .reduction_op = nir_op_iadd);
+      nir_def *workgroups = nir_load_var(&b, workgroups_var);
+
+      nir_push_if(&b, active);
+      mesh_draw_record(&b, draw, records_addr, nir_imm_int(&b, 1), nir_imm_int(&b, 0),
+                       nir_iadd(&b, workgroups, nir_u2u64(&b, before)), grid, task_rings, task_draw_id);
+      nir_pop_if(&b, NULL);
+
+      nir_store_var(&b, workgroups_var, nir_iadd(&b, workgroups, nir_u2u64(&b, sum)), 0x1);
+      nir_store_var(&b, first_var, nir_iadd_imm(&b, first, 32), 0x1);
+   }
+   nir_pop_loop(&b, NULL);
+
+   nir_push_if(&b, nir_ieq_imm(&b, lane, 0));
+   {
+      /* What the passes hold: mesh workgroups past them are left out. */
+      nir_def *room = nir_u2u64(&b, nir_imul(&b, capacity, passes));
+      nir_def *total = nir_u2u32(&b, nir_umin(&b, nir_load_var(&b, workgroups_var), room));
+      nir_build_store_global(&b, nir_vec2(&b, count, total),
+                             nir_iadd_imm(&b, header_addr, RADV_MESH_COMPUTE_HEADER_RECORDS), .align_mul = 4);
+
+      nir_variable *pass_var = nir_local_variable_create(b.impl, glsl_uint_type(), "pass");
+      nir_store_var(&b, pass_var, nir_imm_int(&b, 0), 0x1);
+      nir_push_loop(&b);
+      {
+         nir_def *pass = nir_load_var(&b, pass_var);
+         nir_break_if(&b, nir_uge(&b, pass, passes));
+         nir_def *start = nir_umin(&b, nir_imul(&b, pass, capacity), total);
+         nir_def *x = nir_umin(&b, nir_isub(&b, total, start), capacity);
+         nir_def *args = nir_iadd(&b, header_addr,
+                                  nir_u2u64(&b, nir_iadd_imm(&b, nir_imul_imm(&b, pass, RADV_MESH_COMPUTE_PASS_BYTES),
+                                                             RADV_MESH_COMPUTE_HEADER_PASSES)));
+         nir_def *zero = nir_imm_int(&b, 0), *one = nir_imm_int(&b, 1);
+         nir_build_store_global(&b, nir_vec4(&b, x, one, one, zero), args, .align_mul = 16);
+         nir_build_store_global(&b, nir_vec4(&b, nir_imul(&b, x, vertices_per_workgroup), one, zero, zero),
+                                nir_iadd_imm(&b, args, 16), .align_mul = 16);
+         nir_store_var(&b, pass_var, nir_iadd_imm(&b, pass, 1), 0x1);
+      }
+      nir_pop_loop(&b, NULL);
+   }
+   nir_pop_if(&b, NULL);
+
+   return b.shader;
+}
+
 nir_shader *
 radv_meta_nir_build_task_chunks_cs(void)
 {

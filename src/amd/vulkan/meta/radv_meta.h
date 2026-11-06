@@ -57,6 +57,7 @@ enum radv_meta_object_key_type {
    RADV_META_OBJECT_KEY_GS_COMPUTE_TESS_QUADS,
    RADV_META_OBJECT_KEY_GS_COMPUTE_TESS_PREFIX_SUM,
    RADV_META_OBJECT_KEY_MESH_DRAW_RECORDS,
+   RADV_META_OBJECT_KEY_MESH_COMPUTE_RECORDS,
    RADV_META_OBJECT_KEY_TASK_CHUNKS,
    RADV_META_OBJECT_KEY_COPY_MEMORY,
    RADV_META_OBJECT_KEY_COPY_IMAGE_TO_BUFFER,
@@ -386,6 +387,11 @@ radv_get_image_stride_for_96bit(const struct radv_device *device, const struct r
 uint64_t radv_meta_mesh_draw_records(struct radv_cmd_buffer *cmd_buffer, uint64_t indirect_va, uint32_t stride,
                                      uint64_t count_va, uint32_t max_count, uint32_t parts, uint64_t publish_ring,
                                      uint64_t records_va, uint32_t task_rings, uint32_t task_draw_id);
+
+void radv_meta_mesh_compute_records(struct radv_cmd_buffer *cmd_buffer, uint64_t indirect_va, uint32_t stride,
+                                    uint64_t count_va, uint32_t max_count, uint64_t records_va, uint32_t task_rings,
+                                    uint32_t task_draw_id, uint64_t header_va, uint32_t capacity,
+                                    uint32_t vertices_per_workgroup, uint32_t passes);
 
 void radv_meta_task_chunks(struct radv_cmd_buffer *cmd_buffer, uint64_t indirect_va, uint32_t stride, uint64_t count_va,
                            uint32_t first_draw, uint32_t draws, uint32_t chunks, uint32_t entries, uint64_t out_va);

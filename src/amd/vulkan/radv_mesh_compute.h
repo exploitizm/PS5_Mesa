@@ -1,0 +1,88 @@
+/*
+ * Copyright © 2026 Mihawk
+ *
+ * SPDX-License-Identifier: MIT
+ */
+
+#ifndef RADV_MESH_COMPUTE_H
+#define RADV_MESH_COMPUTE_H
+
+#include <stdbool.h>
+#include <stdint.h>
+
+#include "radv_shader.h"
+
+/* Mesh shaders run as compute on the PS5 (docs/MESH_COMPUTE_DESIGN.md in EglantinePS5). The
+ * GPU's NGG mesh launch (GFX10.1, a vertex a mesh workgroup in GS mode) deadlocks primitive
+ * assembly and the shader exporter in a way that depends on what ran before, so a pipeline with
+ * an emulated task shader (radv_task_emulated) runs its mesh shader as a compute pass that writes
+ * each mesh workgroup's outputs to a slot in memory, and rasterizes them through a vertex shader
+ * that reads them. Per emulated task chunk: the task shader; the records pass
+ * (radv_meta_mesh_compute_records: a record a task workgroup, with the mesh workgroups before it);
+ * then per pass of up to capacity mesh workgroups, the compute pass (each workgroup finds its
+ * record by binary search) and a triangle-list draw of 3 vertices per primitive slot.
+ *
+ * The device's buffer (RADV_MESH_COMPUTE_BYTES): a header, then the slots.
+ *
+ * The header: the first mesh workgroup of the current pass (written by the command processor
+ * before each pass), the chunk's records and mesh workgroups (written by the records pass), and
+ * each pass's dispatch (x, 1, 1, 0) and copy draw (vertices, 1, 0, 0).
+ *
+ * A slot (stride bytes, one per mesh workgroup of a pass, at radv_mesh_compute_slots_va): the
+ * vertex and primitive counts (two dwords, 16 bytes with padding), then max_vertices x the
+ * per-vertex outputs (16 bytes each, in the order of their varying slots), then max_primitives
+ * triangles (their three vertex indices, a byte each, in a dword). */
+
+#define RADV_MESH_COMPUTE_BYTES          (128u << 20)
+#define RADV_MESH_COMPUTE_HEADER_BYTES   4096u
+#define RADV_MESH_COMPUTE_HEADER_BASE    0u  /* the pass's first mesh workgroup */
+#define RADV_MESH_COMPUTE_HEADER_RECORDS 4u  /* the chunk's records, then its mesh workgroups */
+#define RADV_MESH_COMPUTE_HEADER_PASSES  64u /* a pass's dispatch, then its draw */
+#define RADV_MESH_COMPUTE_PASS_BYTES     32u
+#define RADV_MESH_COMPUTE_MAX_PASSES                                                                \
+   ((RADV_MESH_COMPUTE_HEADER_BYTES - RADV_MESH_COMPUTE_HEADER_PASSES) / RADV_MESH_COMPUTE_PASS_BYTES)
+/* The mesh workgroups an emulated task chunk may have before the rest are left out. */
+#define RADV_MESH_COMPUTE_CHUNK_WORKGROUPS 65536u
+
+struct radv_compiler_info;
+struct radv_graphics_state_key;
+
+/* The device's buffers the shaders name by address (set at device creation; these pipelines
+ * are not cached, radv_graphics_pipeline_compile). */
+extern uint64_t radv_mesh_compute_task_emu_va;
+extern uint64_t radv_mesh_compute_header_va;
+extern uint64_t radv_mesh_compute_slots_va;
+
+/* Whether mesh shaders of emulated task draws take this path: unless
+ * /data/eglantineps5/radv-mesh-compute.txt says 0 (read once). */
+bool radv_mesh_compute_enabled(void);
+
+struct radv_device;
+/* The device's buffer, made once (the first pipeline with a task shader, before its shaders are
+ * compiled, since they name it by address). */
+VkResult radv_mesh_compute_init(struct radv_device *device);
+
+struct radv_mesh_compute_split {
+   /* The mesh stage as it was (its layout and key compile the compute pass). */
+   struct radv_shader_stage mesh_stage;
+   /* The mesh shader, lowered to the compute pass. */
+   nir_shader *cs;
+   /* The copy draw's vertices a mesh workgroup: max primitives x 3. */
+   uint32_t vertices_per_workgroup;
+   /* The mesh workgroups a pass holds. */
+   uint32_t capacity;
+};
+
+bool radv_mesh_compute_wanted(const struct radv_graphics_state_key *gfx_state,
+                              const struct radv_shader_stage *stages);
+
+/* stages[MESA_SHADER_MESH] becomes the compute pass (out->cs) and stages[MESA_SHADER_VERTEX] the
+ * copy vertex shader; the mesh stage is left empty. */
+void radv_mesh_compute_split(const struct radv_compiler_info *compiler_info, struct radv_shader_stage *stages,
+                             struct radv_mesh_compute_split *out);
+
+struct radv_shader_binary *radv_mesh_compute_compile(const struct radv_compiler_info *compiler_info,
+                                                     struct radv_mesh_compute_split *split,
+                                                     struct radv_shader_debug_info *debug);
+
+#endif /* RADV_MESH_COMPUTE_H */

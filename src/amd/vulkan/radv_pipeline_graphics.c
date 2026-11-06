@@ -15,6 +15,9 @@
 #include "nir/nir_xfb_info.h"
 #include "nir/radv_nir.h"
 #include "radv_gs_compute.h"
+#ifdef RADV_GS_COMPUTE
+#include "radv_mesh_compute.h"
+#endif
 #include "tools/radv_rmv.h"
 #include "util/mesa-blake3.h"
 #include "util/os_time.h"
@@ -375,8 +378,13 @@ radv_pipeline_needed_dynamic_state(const struct radv_device *device, const struc
    if (pdev->info.gfx_level < GFX10_3)
       states &= ~RADV_DYNAMIC_FRAGMENT_SHADING_RATE;
 
-   /* Disable dynamic states that are useless to mesh shading. */
-   if (radv_pipeline_has_stage(pipeline, MESA_SHADER_MESH)) {
+   /* Disable dynamic states that are useless to mesh shading. A mesh shader run as compute on the
+    * PS5 (radv_mesh_compute.h) leaves no mesh stage among the pipeline's shaders, only a vertex
+    * shader copying its output, and the pipeline has no input assembly or vertex input state: go by
+    * the API stages.
+    */
+   if (radv_pipeline_has_stage(pipeline, MESA_SHADER_MESH) ||
+       (pipeline->active_stages & VK_SHADER_STAGE_MESH_BIT_EXT)) {
       if (!raster_enabled)
          return RADV_DYNAMIC_RASTERIZER_DISCARD_ENABLE;
 
@@ -2522,6 +2530,21 @@ radv_graphics_shaders_compile(const struct radv_compiler_info *compiler_info, st
       gfx_state = &gs_compute_gfx_state;
    }
 
+#ifdef RADV_GS_COMPUTE
+   /* A mesh shader runs as compute on the PS5 (radv_mesh_compute.h): the pipeline's hardware
+    * vertex shader becomes the copy of its outputs, drawn as a triangle list. */
+   struct radv_graphics_state_key mesh_compute_gfx_state;
+   struct radv_mesh_compute_split mesh_split;
+   const bool mesh_compute_used = gs_compute && !gs_compute_used && radv_mesh_compute_wanted(gfx_state, stages);
+   if (mesh_compute_used) {
+      radv_mesh_compute_split(compiler_info, stages, &mesh_split);
+      mesh_compute_gfx_state = *gfx_state;
+      mesh_compute_gfx_state.ia.topology = V_008958_DI_PT_TRILIST;
+      mesh_compute_gfx_state.vs.has_prolog = false;
+      gfx_state = &mesh_compute_gfx_state;
+   }
+#endif
+
    VkShaderStageFlagBits active_nir_stages = 0;
    for (int i = 0; i < MESA_VULKAN_SHADER_STAGES; i++) {
       if (stages[i].nir)
@@ -2880,6 +2903,15 @@ radv_graphics_shaders_compile(const struct radv_compiler_info *compiler_info, st
       gs_compute->tess = gs_compute_nir.tess;
       gs_compute->used = true;
    }
+
+#ifdef RADV_GS_COMPUTE
+   if (mesh_compute_used) {
+      gs_compute->mesh_binary = radv_mesh_compute_compile(compiler_info, &mesh_split, &gs_compute->mesh_debug);
+      gs_compute->mesh_vertices_per_workgroup = mesh_split.vertices_per_workgroup;
+      gs_compute->mesh_capacity = mesh_split.capacity;
+      gs_compute->mesh_used = true;
+   }
+#endif
 }
 
 void
@@ -3089,6 +3121,18 @@ radv_graphics_pipeline_compile(struct radv_graphics_pipeline *pipeline, const Vk
       }
    }
 
+#ifdef RADV_GS_COMPUTE
+   /* An emulated task shader's mesh shader may run as compute (radv_mesh_compute.h): not cached, and
+    * not taken from the cache either, where it may be as a mesh shader. Its buffer comes first:
+    * the shaders name it by address. */
+   if (stages[MESA_SHADER_TASK].stage != MESA_SHADER_NONE && device->task_emu_bo && radv_mesh_compute_enabled()) {
+      skip_shaders_cache = true;
+      result = radv_mesh_compute_init(device);
+      if (result != VK_SUCCESS)
+         return result;
+   }
+#endif
+
    bool found_in_application_cache = true;
    if (!skip_shaders_cache &&
        radv_graphics_pipeline_cache_search(device, cache, pipeline, &found_in_application_cache)) {
@@ -3163,6 +3207,18 @@ radv_graphics_pipeline_compile(struct radv_graphics_pipeline *pipeline, const Vk
          }
       }
       free(gs_compute.vs_nir);
+   }
+
+   if (gs_compute.mesh_used) {
+      /* Its compute pass is not in the shaders cache, and the pass and the copy name the device's
+       * buffers by address. */
+      skip_shaders_cache = true;
+      if (gs_compute.mesh_binary)
+         pipeline->base.mesh_compute =
+            radv_shader_create(device, cache, gs_compute.mesh_binary, true, &gs_compute.mesh_debug);
+      pipeline->base.mesh_compute_vertices_per_workgroup = gs_compute.mesh_vertices_per_workgroup;
+      pipeline->base.mesh_compute_capacity = gs_compute.mesh_capacity;
+      free(gs_compute.mesh_binary);
    }
 
    if (!skip_shaders_cache) {
@@ -3493,6 +3549,9 @@ radv_destroy_graphics_pipeline(struct radv_device *device, struct radv_graphics_
       radv_gs_compute_deferred_vs_destroy(device, pipeline->base.gs_compute->deferred_vs);
       free(pipeline->base.gs_compute);
    }
+
+   if (pipeline->base.mesh_compute)
+      radv_shader_unref(device, pipeline->base.mesh_compute);
 }
 
 /* Whether the library kept its geometry shader: as NIR, or as SPIR-V after a

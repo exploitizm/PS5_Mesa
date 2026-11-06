@@ -186,6 +186,9 @@ struct radv_device {
     * records, its task draw ring and its task payload ring, one chunk at a
     * time (RADV_TASK_EMU_*). */
    struct radeon_winsys_bo *task_emu_bo;
+   /* Mesh shaders run as compute (radv_mesh_compute.h): their workgroups' outputs, made with
+    * the first pipeline that may need it (radv_mesh_compute_init). */
+   struct radeon_winsys_bo *mesh_compute_bo;
 
    struct radeon_winsys_bo *trace_bo;
    struct radv_trace_data *trace_data;

@@ -296,7 +296,8 @@ if with_radv_ps5
   radv_deps += declare_dependency(sources : [libpoly_shaders[1]])
   radv_link_with += libpoly_nir
   radv_flags += '-DRADV_GS_COMPUTE=1'
-  libradv_files += files('radv_gs_compute.c', 'radv_gs_compute.h', 'radv_gs_compute_abi.h')
+  libradv_files += files('radv_gs_compute.c', 'radv_gs_compute.h', 'radv_gs_compute_abi.h',
+                         'radv_mesh_compute.c', 'radv_mesh_compute.h')
 
   # RADV's own OpenCL helpers for them, NIR builder functions as poly's are.
   # Without shader asserts: RADV gives these no printf buffer.

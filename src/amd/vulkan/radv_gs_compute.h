@@ -108,6 +108,13 @@ struct radv_gs_compute_binaries {
    void *vs_nir;
    size_t vs_nir_size;
    struct radv_shader_stage_key vs_key;
+   /* A mesh shader run as compute (radv_mesh_compute.h): its pass, the copy draw's vertices a
+    * mesh workgroup, and the mesh workgroups its slots hold. */
+   bool mesh_used;
+   struct radv_shader_binary *mesh_binary;
+   struct radv_shader_debug_info mesh_debug;
+   uint32_t mesh_vertices_per_workgroup;
+   uint32_t mesh_capacity;
 };
 
 /* A vertex pass compiled at the draw, one variant per vertex input the draws

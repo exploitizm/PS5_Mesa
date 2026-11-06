@@ -54,6 +54,12 @@ struct radv_pipeline {
    struct radv_shader *gs_copy_shader;
    /* A geometry shader run as compute (radv_gs_compute.h), or NULL. */
    struct radv_gs_compute_pipeline *gs_compute;
+   /* A mesh shader run as compute (radv_mesh_compute.h), or NULL; the hardware vertex
+    * shader is then its copy, mesh_compute_vertices_per_workgroup vertices a workgroup, and
+    * mesh_compute_capacity the mesh workgroups a pass of it holds. */
+   struct radv_shader *mesh_compute;
+   uint32_t mesh_compute_vertices_per_workgroup;
+   uint32_t mesh_compute_capacity;
 
    /* Unique pipeline hash identifier. */
    uint64_t pipeline_hash;

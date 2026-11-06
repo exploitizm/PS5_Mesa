@@ -29,6 +29,9 @@
 #include "radv_formats.h"
 #include "radv_physical_device.h"
 #include "radv_shader.h"
+#ifdef RADV_GS_COMPUTE
+#include "radv_mesh_compute.h"
+#endif
 #include "vk_common_entrypoints.h"
 #include "vk_pipeline_cache.h"
 #include "vk_util.h"
@@ -1370,6 +1373,10 @@ radv_destroy_device(struct radv_device *device, const VkAllocationCallbacks *pAl
       radv_bo_destroy(device, NULL, device->ms_publish_ring);
    }
 
+   if (device->mesh_compute_bo) {
+      device->ws->buffer_make_resident(device->ws, device->mesh_compute_bo, false);
+      radv_bo_destroy(device, NULL, device->mesh_compute_bo);
+   }
    if (device->task_emu_bo) {
       device->ws->buffer_make_resident(device->ws, device->task_emu_bo, false);
       radv_bo_destroy(device, NULL, device->task_emu_bo);
@@ -1739,6 +1746,12 @@ radv_CreateDevice(VkPhysicalDevice physicalDevice, const VkDeviceCreateInfo *pCr
       result = device->ws->buffer_make_resident(device->ws, device->task_emu_bo, true);
       if (result != VK_SUCCESS)
          goto fail;
+
+#ifdef RADV_GS_COMPUTE
+      /* Mesh shaders run as compute read the task rings by address (radv_mesh_compute.h); their
+       * own buffer is made with the first pipeline that may need it (radv_mesh_compute_init). */
+      radv_mesh_compute_task_emu_va = radv_buffer_get_va(device->task_emu_bo);
+#endif
    }
 
    if (pdev->info.has_graphics && !(instance->debug_flags & RADV_DEBUG_NO_IB_CHAINING))
