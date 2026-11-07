@@ -390,7 +390,7 @@ uint64_t radv_meta_mesh_draw_records(struct radv_cmd_buffer *cmd_buffer, uint64_
 
 void radv_meta_mesh_compute_records(struct radv_cmd_buffer *cmd_buffer, uint64_t indirect_va, uint32_t stride,
                                     uint64_t count_va, uint32_t max_count, uint64_t records_va, uint32_t task_rings,
-                                    uint32_t task_draw_id, uint64_t header_va, uint32_t capacity,
+                                    uint32_t task_draw_id, uint32_t draw_id_step, uint64_t header_va, uint32_t capacity,
                                     uint32_t vertices_per_workgroup, uint32_t passes);
 
 void radv_meta_task_chunks(struct radv_cmd_buffer *cmd_buffer, uint64_t indirect_va, uint32_t stride, uint64_t count_va,

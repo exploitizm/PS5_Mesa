@@ -398,7 +398,7 @@ radv_device_get_cache_uuid(struct radv_physical_device *pdev, void *uuid)
    {
       /* Whether emulated task draws' mesh shaders run as compute (radv_mesh_compute.h): their
        * pipelines are compiled differently. */
-      const uint8_t mesh_compute = radv_mesh_compute_enabled();
+      const uint8_t mesh_compute = radv_mesh_compute_enabled() ? RADV_MESH_COMPUTE_VERSION : 0;
       _mesa_blake3_update(&ctx, &mesh_compute, sizeof(mesh_compute));
    }
 #endif

@@ -37,8 +37,7 @@ radv_mesh_compute_enabled(void)
          fclose(f);
       }
       if (!value)
-         fprintf(stderr, "radv/ps5: mesh shaders of emulated task draws run as mesh shaders "
-                         "(radv-mesh-compute.txt)\n");
+         fprintf(stderr, "radv/ps5: mesh shaders run on the hardware mesh path (radv-mesh-compute.txt)\n");
       p_atomic_set(&enabled, value);
    }
    return enabled;
@@ -117,39 +116,55 @@ radv_mesh_compute_lower_block(nir_shader *nir, const struct radv_shader_stage *s
 
 static const uint64_t allowed_vertex_outputs = VARYING_BIT_POS | BITFIELD64_RANGE(VARYING_SLOT_VAR0, 32);
 
-bool
-radv_mesh_compute_wanted(const struct radv_graphics_state_key *gfx_state, const struct radv_shader_stage *stages)
+/* Why a mesh shader keeps the hardware path, or NULL when it runs as compute. */
+static const char *
+mesh_compute_refusal(const struct radv_graphics_state_key *gfx_state, const struct radv_shader_stage *stages)
 {
    const nir_shader *mesh = stages[MESA_SHADER_MESH].nir;
-   const nir_shader *task = stages[MESA_SHADER_TASK].nir;
    const nir_shader *fs = stages[MESA_SHADER_FRAGMENT].nir;
 
-   if (!mesh || !task || !radv_mesh_compute_enabled())
-      return false;
-
-   /* First slice: triangles, outputs that are positions and generic varyings, no
-    * per-primitive outputs but the indices, no multiview. */
-   if (mesh->info.mesh.primitive_type != MESA_PRIM_TRIANGLES || gfx_state->has_multiview_view_index)
-      return false;
+   if (mesh->info.mesh.primitive_type != MESA_PRIM_TRIANGLES)
+      return "not triangles";
+   if (gfx_state->has_multiview_view_index)
+      return "multiview";
    if (!mesh->info.mesh.max_vertices_out || mesh->info.mesh.max_vertices_out > 256 ||
        !mesh->info.mesh.max_primitives_out || mesh->info.mesh.max_primitives_out > 256)
-      return false;
+      return "more than 256 vertices or primitives";
 
    const uint64_t written = mesh->info.outputs_written;
    const uint64_t per_prim = mesh->info.per_primitive_outputs;
    if ((written & ~per_prim) & ~allowed_vertex_outputs)
-      return false;
+      return "a per-vertex output other than the position and generic varyings";
    if ((written & per_prim) != VARYING_BIT_PRIMITIVE_INDICES)
-      return false;
+      return "per-primitive outputs";
    if (!(written & VARYING_BIT_POS))
-      return false;
+      return "no position";
 
    if (fs) {
       nir_foreach_shader_in_variable (var, fs) {
          if (var->data.per_primitive || var->data.location == VARYING_SLOT_PRIMITIVE_ID ||
              var->data.location == VARYING_SLOT_LAYER || var->data.location == VARYING_SLOT_VIEWPORT)
-            return false;
+            return "a per-primitive fragment input";
       }
+   }
+   return NULL;
+}
+
+bool
+radv_mesh_compute_wanted(const struct radv_graphics_state_key *gfx_state, const struct radv_shader_stage *stages)
+{
+   /* Mesh shaders with an emulated task shader, and without one (DRAW_INDEX_AUTO of a vertex a
+    * workgroup, the same NGG launch). */
+   if (!stages[MESA_SHADER_MESH].nir || !radv_mesh_compute_enabled())
+      return false;
+
+   const char *refusal = mesh_compute_refusal(gfx_state, stages);
+   if (refusal) {
+      static unsigned told;
+      if (p_atomic_inc_return(&told) <= 16)
+         fprintf(stderr, "radv/ps5 mesh-compute: a mesh shader%s keeps the hardware path: %s\n",
+                 stages[MESA_SHADER_TASK].nir ? " with a task shader" : "", refusal);
+      return false;
    }
    return true;
 }
@@ -435,14 +450,16 @@ radv_mesh_compute_split(const struct radv_compiler_info *compiler_info, struct r
    l.prim_offset = 16 + l.max_vertices * l.num_vtx_slots * 16;
    l.stride = align(l.prim_offset + l.max_primitives * 4, 64);
    l.capacity = MIN2(RADV_MESH_COMPUTE_SLOTS_BYTES / l.stride, RADV_MESH_COMPUTE_CHUNK_WORKGROUPS);
-   l.payload_stride = align(MAX2(stages[MESA_SHADER_TASK].nir->info.task_payload_size, 16), 16);
+   l.payload_stride =
+      stages[MESA_SHADER_TASK].nir ? align(MAX2(stages[MESA_SHADER_TASK].nir->info.task_payload_size, 16), 16) : 16;
    l.address32_hi = compiler_info->hw.address32_hi;
 
    static unsigned told;
    if (p_atomic_inc_return(&told) <= 16)
       fprintf(stderr,
-              "radv/ps5 mesh-compute: a slot of %u bytes (%u vertices of %u outputs, %u primitives), %u a pass\n",
-              l.stride, l.max_vertices, l.num_vtx_slots, l.max_primitives, l.capacity);
+              "radv/ps5 mesh-compute: a slot of %u bytes (%u vertices of %u outputs, %u primitives), %u a pass%s\n",
+              l.stride, l.max_vertices, l.num_vtx_slots, l.max_primitives, l.capacity,
+              stages[MESA_SHADER_TASK].nir ? "" : ", no task shader");
 
    nir_shader *vs = build_copy_vs(mesh->options, &l, compiler_info->key.ge_wave_size);
    lower_mesh_to_compute(mesh, &l);

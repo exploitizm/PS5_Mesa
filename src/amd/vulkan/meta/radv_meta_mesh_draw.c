@@ -112,19 +112,20 @@ radv_meta_mesh_draw_records(struct radv_cmd_buffer *cmd_buffer, uint64_t indirec
 
 /* The records of an emulated task chunk whose mesh shader runs as compute (radv_mesh_compute.h),
  * from its draw ring (indirect_va, stride, up to max_count task workgroups, or the count at
- * count_va), and the header at header_va: the counts and each of passes passes' dispatch and copy
+ * count_va), or of draws of such a mesh shader without a task shader (their commands, each its
+ * own draw ID: draw_id_step 1), and the header at header_va: the counts and each of passes passes' dispatch and copy
  * draw, capacity mesh workgroups a pass at most. */
 void
 radv_meta_mesh_compute_records(struct radv_cmd_buffer *cmd_buffer, uint64_t indirect_va, uint32_t stride,
                                uint64_t count_va, uint32_t max_count, uint64_t records_va, uint32_t task_rings,
-                               uint32_t task_draw_id, uint64_t header_va, uint32_t capacity,
+                               uint32_t task_draw_id, uint32_t draw_id_step, uint64_t header_va, uint32_t capacity,
                                uint32_t vertices_per_workgroup, uint32_t passes)
 {
    struct radv_device *device = radv_cmd_buffer_device(cmd_buffer);
    VkPipelineLayout layout;
    VkPipeline pipeline;
 
-   VkResult result = get_pipeline(device, RADV_META_OBJECT_KEY_MESH_COMPUTE_RECORDS, 60,
+   VkResult result = get_pipeline(device, RADV_META_OBJECT_KEY_MESH_COMPUTE_RECORDS, 64,
                                   radv_meta_nir_build_mesh_compute_records_cs, &pipeline, &layout);
    if (result != VK_SUCCESS) {
       vk_command_buffer_set_error(&cmd_buffer->vk, result);
@@ -136,10 +137,10 @@ radv_meta_mesh_compute_records(struct radv_cmd_buffer *cmd_buffer, uint64_t indi
 
    radv_meta_bind_compute_pipeline(cmd_buffer, pipeline);
 
-   const uint32_t constants[15] = {
+   const uint32_t constants[16] = {
       indirect_va, indirect_va >> 32, records_va,   records_va >> 32,       count_va, count_va >> 32, stride, max_count,
       task_rings,  task_draw_id,      header_va,    header_va >> 32,        capacity, vertices_per_workgroup,
-      passes,
+      passes,      draw_id_step,
    };
    radv_meta_push_constants(cmd_buffer, layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(constants), constants);
 

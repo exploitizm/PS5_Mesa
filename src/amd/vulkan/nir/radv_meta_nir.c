@@ -1568,9 +1568,11 @@ radv_meta_nir_build_mesh_draw_records_cs(void)
  * (radv_task_emu_block) and its dispatch's workgroups, 0 past the draw's, which
  * the chunk's records and draw take as their count. An invocation a chunk.
  */
-/* The records of an emulated task chunk whose mesh shader runs as compute (radv_mesh_compute.h):
- * a record a task workgroup (its grid, task draw and first mesh workgroup, as the ordered records
- * of radv_meta_nir_build_mesh_draw_records_cs), then in the header the count of records and of
+/* The records of an emulated task chunk whose mesh shader runs as compute (radv_mesh_compute.h),
+ * or of a mesh shader's draws without a task shader: a record a task workgroup or draw (its grid,
+ * draw ID and first mesh workgroup, as the ordered records of
+ * radv_meta_nir_build_mesh_draw_records_cs; the draw ID the first's plus draw_id_step a record),
+ * then in the header the count of records and of
  * mesh workgroups, and each pass's dispatch (x, 1, 1, 0) and copy draw (x vertices a workgroup,
  * 1, 0, 0), x being the pass's mesh workgroups, at most capacity.
  */
@@ -1592,6 +1594,7 @@ radv_meta_nir_build_mesh_compute_records_cs(void)
    nir_def *capacity = nir_load_push_constant(&b, 1, 32, nir_imm_int(&b, 0), .base = 48, .range = 4);
    nir_def *vertices_per_workgroup = nir_load_push_constant(&b, 1, 32, nir_imm_int(&b, 0), .base = 52, .range = 4);
    nir_def *passes = nir_load_push_constant(&b, 1, 32, nir_imm_int(&b, 0), .base = 56, .range = 4);
+   nir_def *draw_id_step = nir_load_push_constant(&b, 1, 32, nir_imm_int(&b, 0), .base = 60, .range = 4);
 
    nir_push_if(&b, nir_ine_imm(&b, count_addr, 0));
    nir_def *count = nir_umin(&b, nir_build_load_global(&b, 1, 32, count_addr, .align_mul = 4), max_count);
@@ -1624,7 +1627,8 @@ radv_meta_nir_build_mesh_compute_records_cs(void)
 
       nir_push_if(&b, active);
       mesh_draw_record(&b, draw, records_addr, nir_imm_int(&b, 1), nir_imm_int(&b, 0),
-                       nir_iadd(&b, workgroups, nir_u2u64(&b, before)), grid, task_rings, task_draw_id);
+                       nir_iadd(&b, workgroups, nir_u2u64(&b, before)), grid, task_rings,
+                       nir_iadd(&b, task_draw_id, nir_imul(&b, draw, draw_id_step)));
       nir_pop_if(&b, NULL);
 
       nir_store_var(&b, workgroups_var, nir_iadd(&b, workgroups, nir_u2u64(&b, sum)), 0x1);

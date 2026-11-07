@@ -15,10 +15,12 @@
 /* Mesh shaders run as compute on the PS5 (docs/MESH_COMPUTE_DESIGN.md in EglantinePS5). The
  * GPU's NGG mesh launch (GFX10.1, a vertex a mesh workgroup in GS mode) deadlocks primitive
  * assembly and the shader exporter in a way that depends on what ran before, so a pipeline with
- * an emulated task shader (radv_task_emulated) runs its mesh shader as a compute pass that writes
+ * a mesh shader, with an emulated task shader (radv_task_emulated) or none, runs it as a compute
+ * pass that writes
  * each mesh workgroup's outputs to a slot in memory, and rasterizes them through a vertex shader
  * that reads them. Per emulated task chunk: the task shader; the records pass
  * (radv_meta_mesh_compute_records: a record a task workgroup, with the mesh workgroups before it);
+ * without a task shader, the records pass over the draws' own grids (a record a draw);
  * then per pass of up to capacity mesh workgroups, the compute pass (each workgroup finds its
  * record by binary search) and a triangle-list draw of 3 vertices per primitive slot. Passes
  * past the chunk's mesh workgroups are skipped by the command processor (COND_EXEC on the pass's
@@ -51,6 +53,9 @@
 #define RADV_MESH_COMPUTE_PASS_DWORDS 2048u
 /* The mesh workgroups an emulated task chunk may have before the rest are left out. */
 #define RADV_MESH_COMPUTE_CHUNK_WORKGROUPS 65536u
+/* Mesh pipelines this path takes (part of the cache's UUID, radv_device_get_cache_uuid): 2 adds
+ * those without a task shader, cached before on the hardware path. */
+#define RADV_MESH_COMPUTE_VERSION 2u
 
 struct radv_compiler_info;
 struct radv_graphics_state_key;
@@ -65,12 +70,12 @@ struct radv_mesh_compute_block {
    uint64_t slots;   /* its slots, after the header */
 };
 
-/* Whether mesh shaders of emulated task draws take this path: unless
- * /data/eglantineps5/radv-mesh-compute.txt says 0 (read once). */
+/* Whether mesh shaders take this path: unless /data/eglantineps5/radv-mesh-compute.txt says 0
+ * (read once). */
 bool radv_mesh_compute_enabled(void);
 
 struct radv_device;
-/* The device's buffer, made once (the first pipeline with a task shader). */
+/* The device's buffer, made once (the first pipeline with a mesh shader). */
 VkResult radv_mesh_compute_init(struct radv_device *device);
 
 struct radv_mesh_compute_split {

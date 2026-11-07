@@ -3126,10 +3126,9 @@ radv_graphics_pipeline_compile(struct radv_graphics_pipeline *pipeline, const Vk
    }
 
 #ifdef RADV_GS_COMPUTE
-   /* An emulated task shader's mesh shader may run as compute (radv_mesh_compute.h), whose draws
-    * need the device's buffer. Whether that path is on is in the cache's UUID
-    * (radv_device_get_cache_uuid). */
-   if (stages[MESA_SHADER_TASK].stage != MESA_SHADER_NONE && device->task_emu_bo && radv_mesh_compute_enabled()) {
+   /* A mesh shader may run as compute (radv_mesh_compute.h), whose draws need the device's
+    * buffer. Whether that path is on is in the cache's UUID (radv_device_get_cache_uuid). */
+   if (stages[MESA_SHADER_MESH].stage != MESA_SHADER_NONE && device->task_emu_bo && radv_mesh_compute_enabled()) {
       result = radv_mesh_compute_init(device);
       if (result != VK_SUCCESS)
          return result;

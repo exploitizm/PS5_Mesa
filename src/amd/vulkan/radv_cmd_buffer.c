@@ -15739,12 +15739,14 @@ radv_mesh_compute_dispatch(struct radv_cmd_buffer *cmd_buffer, const struct radv
    cmd_buffer->state.flush_bits |= RADV_CMD_FLAG_CS_PARTIAL_FLUSH | RADV_CMD_FLAG_INV_VCACHE | RADV_CMD_FLAG_INV_SCACHE;
 }
 
-/* A chunk's mesh workgroups, from its draw ring (count task workgroups, or the count at
- * count_va): the records pass, then per pass the first workgroup's index in the header, the
+/* A chunk's mesh workgroups, from the grids at grids_va (count of them, stride bytes apart, or
+ * the count at count_va: an emulated task chunk's draw ring, or a draw's own commands without a
+ * task shader): the records pass, then per pass the first workgroup's index in the header, the
  * compute pass and the copy draw. */
 static void
-radv_mesh_compute_chunk(struct radv_cmd_buffer *cmd_buffer, const struct radv_task_emu *emu, uint64_t block_va,
-                        uint32_t draw_id, uint32_t count, uint64_t count_va)
+radv_mesh_compute_chunk(struct radv_cmd_buffer *cmd_buffer, uint64_t block_va, uint64_t grids_va, uint32_t stride,
+                        uint32_t count, uint64_t count_va, uint64_t records_va, uint32_t task_rings,
+                        uint32_t draw_id, uint32_t draw_id_step)
 {
    struct radv_device *device = radv_cmd_buffer_device(cmd_buffer);
    const struct radv_physical_device *pdev = radv_device_physical(device);
@@ -15754,8 +15756,8 @@ radv_mesh_compute_chunk(struct radv_cmd_buffer *cmd_buffer, const struct radv_ta
    const uint32_t passes = MIN2(DIV_ROUND_UP(RADV_MESH_COMPUTE_CHUNK_WORKGROUPS, capacity), RADV_MESH_COMPUTE_MAX_PASSES);
    const uint64_t header_va = radv_buffer_get_va(device->mesh_compute_bo);
 
-   radv_meta_mesh_compute_records(cmd_buffer, emu->draw_ring_va, AC_TASK_DRAW_ENTRY_BYTES, count_va, count,
-                                  emu->records_va, (uint32_t)emu->rings_va, draw_id, header_va, capacity,
+   radv_meta_mesh_compute_records(cmd_buffer, grids_va, stride, count_va, count, records_va, task_rings, draw_id,
+                                  draw_id_step, header_va, capacity,
                                   pipeline->mesh_compute_vertices_per_workgroup, passes);
 
    for (uint32_t pass = 0; pass < passes; pass++) {
@@ -15805,9 +15807,9 @@ radv_mesh_compute_chunk(struct radv_cmd_buffer *cmd_buffer, const struct radv_ta
 }
 
 /* A mesh draw of a pipeline whose mesh shader runs as compute: the emulated task draw's chunks
- * (radv_task_emu_draw_direct, radv_task_emu_draw_indirect), each drawn by
- * radv_mesh_compute_chunk, the copy as a triangle list. info is the indirect draw, or NULL with
- * the direct draw's grid. */
+ * (radv_task_emu_draw_direct, radv_task_emu_draw_indirect), or without a task shader the draws'
+ * own grids, each drawn by radv_mesh_compute_chunk, the copy as a triangle list. info is the
+ * indirect draw, or NULL with the direct draw's grid. */
 static void
 radv_mesh_compute_draw(struct radv_cmd_buffer *cmd_buffer, const struct radv_draw_info *info, uint32_t x, uint32_t y,
                        uint32_t z)
@@ -15816,25 +15818,36 @@ radv_mesh_compute_draw(struct radv_cmd_buffer *cmd_buffer, const struct radv_dra
    const struct radv_pipeline *pipeline = &cmd_buffer->state.graphics_pipeline->base;
    struct radv_cmd_state *state = &cmd_buffer->state;
    struct radv_dynamic_state *d = &state->dynamic;
+   const bool task = radv_cmdbuf_has_stage(cmd_buffer, MESA_SHADER_TASK);
    const uint32_t workgroups = info ? 0 : x * y * z;
 
-   if ((!info && !workgroups) || (info && !info->count) || !pipeline->mesh_compute || !device->mesh_compute_bo)
+   if ((!info && !workgroups) || (info && !info->count) || !pipeline->mesh_compute || !device->mesh_compute_bo ||
+       !device->task_emu_bo)
       return;
 
    if (state->dirty & RADV_CMD_DIRTY_GRAPHICS_SHADERS)
       radv_bind_graphics_shaders(cmd_buffer);
 
    struct radv_task_emu emu;
-   if (!radv_task_emu_begin(cmd_buffer, &emu))
-      return;
+   uint64_t records_va;
+   if (task) {
+      if (!radv_task_emu_begin(cmd_buffer, &emu))
+         return;
+      records_va = emu.records_va;
+   } else {
+      /* The task emulation's records hold the draws' (radv_task_emu_draw_chunk reuses them the
+       * same way, a chunk at a time). */
+      records_va = radv_buffer_get_va(device->task_emu_bo) + RADV_TASK_EMU_RECORDS_OFFSET;
+      radv_cs_add_buffer(device->ws, cmd_buffer->cs->b, device->task_emu_bo);
+   }
 
    radv_cs_add_buffer(device->ws, cmd_buffer->cs->b, device->mesh_compute_bo);
 
    /* Where the draw's buffers are, for the compute pass and the copy. */
    const uint64_t header_va = radv_buffer_get_va(device->mesh_compute_bo);
    const struct radv_mesh_compute_block block = {
-      .records = emu.records_va,
-      .payload = radv_buffer_get_va(device->task_emu_bo) + RADV_TASK_EMU_PAYLOAD_OFFSET,
+      .records = records_va,
+      .payload = task ? radv_buffer_get_va(device->task_emu_bo) + RADV_TASK_EMU_PAYLOAD_OFFSET : 0,
       .header = header_va,
       .slots = header_va + RADV_MESH_COMPUTE_HEADER_BYTES,
    };
@@ -15852,25 +15865,45 @@ radv_mesh_compute_draw(struct radv_cmd_buffer *cmd_buffer, const struct radv_dra
 
    const struct radv_draw_info rast = {
       .count = 1,
-      .indirect_va = radv_buffer_get_va(device->mesh_compute_bo) + RADV_MESH_COMPUTE_HEADER_PASSES + 16,
+      .indirect_va = header_va + RADV_MESH_COMPUTE_HEADER_PASSES + 16,
       .stride = 16,
    };
    if (radv_before_draw(cmd_buffer, &rast, 1, false)) {
       radeon_check_space(device->ws, cmd_buffer->cs->b, 16);
       radv_emit_userdata_address(device, cmd_buffer->cs, state->shaders[MESA_SHADER_VERTEX], AC_UD_VS_GS_COMPUTE_DRAW,
                                  block_va);
-      if (!info) {
+      if (!task && !info) {
+         /* The draw's grid, as a draw command. */
+         const uint32_t grid[3] = {x, y, z};
+         unsigned offset;
+         if (radv_cmd_buffer_upload_data(cmd_buffer, sizeof(grid), grid, &offset))
+            radv_mesh_compute_chunk(cmd_buffer, block_va, radv_buffer_get_va(cmd_buffer->upload.upload_bo) + offset,
+                                    sizeof(grid), 1, 0, records_va, 0, 0, 0);
+         else
+            vk_command_buffer_set_error(&cmd_buffer->vk, VK_ERROR_OUT_OF_HOST_MEMORY);
+      } else if (!task) {
+         /* A record a draw command, as many at a time as the records hold. A count in memory
+          * applies to the first of them only: more than that many draws are left out. */
+         for (uint32_t first = 0; first < info->count; first += RADV_TASK_EMU_MAX_ENTRIES) {
+            radv_mesh_compute_chunk(cmd_buffer, block_va, info->indirect_va + (uint64_t)first * info->stride,
+                                    info->stride, MIN2(RADV_TASK_EMU_MAX_ENTRIES, info->count - first),
+                                    first ? 0 : info->count_va, records_va, 0, first, 1);
+            if (info->count_va)
+               break;
+         }
+      } else if (!info) {
          for (uint32_t first = 0; first < workgroups; first += emu.entries) {
             const uint32_t count = MIN2(emu.entries, workgroups - first);
-            const struct radv_task_emu_block block = {.grid = {x, y, z}, .first_workgroup = first};
+            const struct radv_task_emu_block chunk = {.grid = {x, y, z}, .first_workgroup = first};
             unsigned offset;
-            if (!radv_cmd_buffer_upload_data(cmd_buffer, sizeof(block), &block, &offset)) {
+            if (!radv_cmd_buffer_upload_data(cmd_buffer, sizeof(chunk), &chunk, &offset)) {
                vk_command_buffer_set_error(&cmd_buffer->vk, VK_ERROR_OUT_OF_HOST_MEMORY);
                break;
             }
             radv_task_emu_dispatch(cmd_buffer, &emu, radv_buffer_get_va(cmd_buffer->upload.upload_bo) + offset,
                                    count, 0);
-            radv_mesh_compute_chunk(cmd_buffer, &emu, block_va, 0, count, 0);
+            radv_mesh_compute_chunk(cmd_buffer, block_va, emu.draw_ring_va, AC_TASK_DRAW_ENTRY_BYTES, count, 0,
+                                    emu.records_va, (uint32_t)emu.rings_va, 0, 0);
          }
       } else {
          /* As radv_task_emu_draw_indirect: every chunk the task workgroup limit allows, those past
@@ -15889,16 +15922,19 @@ radv_mesh_compute_draw(struct radv_cmd_buffer *cmd_buffer, const struct radv_dra
                                   chunks, emu.entries, out_va);
 
             for (uint32_t i = 0; i < draws * chunks; i++) {
-               const uint64_t block_va = out_va + i * sizeof(struct radv_task_emu_block);
+               const uint64_t chunk_va = out_va + i * sizeof(struct radv_task_emu_block);
                const uint64_t args_va = out_va + draws * chunks * sizeof(struct radv_task_emu_block) + i * 16;
-               radv_task_emu_dispatch(cmd_buffer, &emu, block_va, 0, args_va);
-               radv_mesh_compute_chunk(cmd_buffer, &emu, block_va, first_draw + i / chunks, emu.entries, args_va);
+               radv_task_emu_dispatch(cmd_buffer, &emu, chunk_va, 0, args_va);
+               radv_mesh_compute_chunk(cmd_buffer, block_va, emu.draw_ring_va, AC_TASK_DRAW_ENTRY_BYTES,
+                                       emu.entries, args_va, emu.records_va, (uint32_t)emu.rings_va,
+                                       first_draw + i / chunks, 0);
             }
          }
       }
       radv_after_draw(cmd_buffer);
    }
-   radv_task_emu_end(cmd_buffer);
+   if (task)
+      radv_task_emu_end(cmd_buffer);
 
    d->vk.ia.primitive_topology = saved_topology;
    state->dirty_dynamic |= RADV_DYNAMIC_PRIMITIVE_TOPOLOGY;
