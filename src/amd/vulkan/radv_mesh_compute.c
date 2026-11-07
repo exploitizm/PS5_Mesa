@@ -158,15 +158,7 @@ radv_mesh_compute_wanted(const struct radv_graphics_state_key *gfx_state, const 
    if (!stages[MESA_SHADER_MESH].nir || !radv_mesh_compute_enabled())
       return false;
 
-   const char *refusal = mesh_compute_refusal(gfx_state, stages);
-   if (refusal) {
-      static unsigned told;
-      if (p_atomic_inc_return(&told) <= 16)
-         fprintf(stderr, "radv/ps5 mesh-compute: a mesh shader%s keeps the hardware path: %s\n",
-                 stages[MESA_SHADER_TASK].nir ? " with a task shader" : "", refusal);
-      return false;
-   }
-   return true;
+   return mesh_compute_refusal(gfx_state, stages) == NULL;
 }
 
 static unsigned
@@ -453,13 +445,6 @@ radv_mesh_compute_split(const struct radv_compiler_info *compiler_info, struct r
    l.payload_stride =
       stages[MESA_SHADER_TASK].nir ? align(MAX2(stages[MESA_SHADER_TASK].nir->info.task_payload_size, 16), 16) : 16;
    l.address32_hi = compiler_info->hw.address32_hi;
-
-   static unsigned told;
-   if (p_atomic_inc_return(&told) <= 16)
-      fprintf(stderr,
-              "radv/ps5 mesh-compute: a slot of %u bytes (%u vertices of %u outputs, %u primitives), %u a pass%s\n",
-              l.stride, l.max_vertices, l.num_vtx_slots, l.max_primitives, l.capacity,
-              stages[MESA_SHADER_TASK].nir ? "" : ", no task shader");
 
    nir_shader *vs = build_copy_vs(mesh->options, &l, compiler_info->key.ge_wave_size);
    lower_mesh_to_compute(mesh, &l);
