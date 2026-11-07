@@ -514,9 +514,17 @@ radv_mesh_compute_compile(const struct radv_compiler_info *compiler_info, struct
    nir->info.max_subgroup_size = 32;
    NIR_PASS(_, nir, nir_lower_compute_system_values, &compute_sysval_options);
    NIR_PASS(_, nir, nir_lower_global_vars_to_local);
-   NIR_PASS(_, nir, ac_nir_lower_indirect_derefs);
    NIR_PASS(_, nir, nir_lower_vars_to_ssa);
    radv_optimize_nir(nir, stage.key.optimisations_disabled);
+   /* Indirect derefs after the optimization loop, as the graphics stages have them
+    * (radv_graphics_shaders_compile): lowered first, a mesh shader's arrays indexed by the vertex
+    * or primitive grew it until the copy propagation of variables ran out of memory (Ocarina's
+    * shaders without a task shader). */
+   bool indirect_derefs_lowered = false;
+   NIR_PASS(indirect_derefs_lowered, nir, ac_nir_lower_indirect_derefs);
+   NIR_PASS(_, nir, nir_lower_vars_to_ssa);
+   if (indirect_derefs_lowered && !stage.key.optimisations_disabled)
+      radv_optimize_nir(nir, false);
    nir_shader_gather_info(nir, nir_shader_get_entrypoint(nir));
 
    radv_nir_shader_info_init(MESA_SHADER_COMPUTE, MESA_SHADER_NONE, &stage.info);
